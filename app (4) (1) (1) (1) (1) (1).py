@@ -1278,8 +1278,6 @@ else:
             key="ta_ref_business_dl"
         )
 
-
-
 elif view == "80-20":
     # Everything for 80-20 lives INSIDE this tab (own controls; no sidebar widgets)
     st.subheader("80-20 Pareto + Trajectory + Conversion% + Mix Analyzer")
