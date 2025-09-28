@@ -166,7 +166,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement"],  # ← add this
+        ["Dashboard", "MIS", "AC Wise Detail", "Predictibility", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -3188,3 +3188,65 @@ elif view == "Dashboard":
                 """,
                 unsafe_allow_html=True,
             )
+
+elif view == "Predictibility":
+    st.subheader("Predictibility – Running Month Enrolment Forecast")
+    st.caption("A = payments to date; B = remaining (same-month created rate); C = remaining (prev-months created rate).")
+    colp1, colp2, colp3 = st.columns([1,1,2])
+    with colp1:
+        lookback = st.selectbox("Lookback window (months)", [3, 6, 12], index=0)
+    with colp2:
+        st.markdown("**Averaging:** Recency-weighted"); weighted = True
+    with colp3:
+        st.info("Rates computed per source over the last K pay-months (excluding current).")
+
+    cur_start, cur_end = month_bounds(today)
+    d_preview = add_month_cols(df_f, create_col, pay_col)
+    cur_period = pd.Period(today, freq="M")
+    in_cur_pay = d_preview["_pay_m"] == cur_period
+    st.caption(f"Payments found this month (after filters): **{int(in_cur_pay.sum()):,}**")
+
+    tbl, totals = predict_running_month(df_f, create_col, pay_col, source_col, lookback, weighted, today)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>A · Actual to date</div><div class='kpi-value' style='color:{PALETTE['A_actual']}'>{totals['A_Actual_ToDate']:.1f}</div></div>", unsafe_allow_html=True)
+    with c2: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>B · Remaining (same-month)</div><div class='kpi-value' style='color:{PALETTE['Rem_same']}'>{totals['B_Remaining_SameMonth']:.1f}</div></div>", unsafe_allow_html=True)
+    with c3: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>C · Remaining (prev-months)</div><div class='kpi-value' style='color:{PALETTE['Rem_prev']}'>{totals['C_Remaining_PrevMonths']:.1f}</div></div>", unsafe_allow_html=True)
+    with c4: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Projected Month-End</div><div class='kpi-value' style='color:{PALETTE['Total']}'>{totals['Projected_MonthEnd_Total']:.1f}</div><div class='kpi-sub'>A + B + C</div></div>", unsafe_allow_html=True)
+
+    st.altair_chart(predict_chart_stacked(tbl), use_container_width=True)
+
+    with st.expander("Detailed table (by source)"):
+        show_cols = ["Source","A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total","Rate_Same_Daily","Rate_Prev_Daily","Remaining_Days"]
+        if not tbl.empty:
+            view_tbl = tbl[show_cols].copy()
+            for c in ["B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total","Rate_Same_Daily","Rate_Prev_Daily"]:
+                view_tbl[c] = view_tbl[c].astype(float).round(3)
+            st.dataframe(view_tbl, use_container_width=True)
+            csv = view_tbl.to_csv(index=False).encode("utf-8")
+            st.download_button("Download CSV", data=csv, file_name="predictibility_by_source.csv", mime="text/csv")
+        else:
+            st.info("No data in scope for the running month after filters.")
+
+    st.subheader("Model Accuracy")
+    bt, metrics = backtest_accuracy(df_f, create_col, pay_col, source_col, lookback=lookback, weighted=True, backtest_months=lookback, today=date.today())
+    acc_pct = np.nan
+    if not pd.isna(metrics.get("WAPE", np.nan)):
+        acc_pct = max(0.0, min(100.0, (1.0 - metrics["WAPE"]) * 100.0))
+    elif not pd.isna(metrics.get("MAPE", np.nan)):
+        acc_pct = max(0.0, min(100.0, (1.0 - metrics["MAPE"]) * 100.0))
+    st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Model Accuracy (100 − WAPE)</div><div class='kpi-value'>{'–' if pd.isna(acc_pct) else f'{acc_pct:.1f}%'}</div></div>", unsafe_allow_html=True)
+
+    show_details = st.checkbox("Show detailed metrics", value=False)
+    if show_details:
+        m1, m2, m3, m4, m5 = st.columns(5)
+        def fmt(x, pct=False): return "–" if pd.isna(x) else (f"{x*100:.1f}%" if pct else f"{x:.2f}")
+        with m1: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>MAPE</div><div class='kpi-value'>{fmt(metrics['MAPE'], pct=True)}</div></div>", unsafe_allow_html=True)
+        with m2: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>WAPE</div><div class='kpi-value'>{fmt(metrics['WAPE'], pct=True)}</div></div>", unsafe_allow_html=True)
+        with m3: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>MAE</div><div class='kpi-value'>{fmt(metrics['MAE'])}</div></div>", unsafe_allow_html=True)
+        with m4: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>RMSE</div><div class='kpi-value'>{fmt(metrics['RMSE'])}</div></div>", unsafe_allow_html=True)
+        with m5: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>R²</div><div class='kpi-value'>{fmt(metrics['R2'])}</div></div>", unsafe_allow_html=True)
+        if bt.empty:
+            st.info("Not enough historical data to backtest with the chosen settings.")
+        else:
+            st.altair_chart(accuracy_scatter(bt), use_container_width=True)
