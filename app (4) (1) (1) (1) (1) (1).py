@@ -3158,29 +3158,28 @@ elif view == "Predictibility":
     from calendar import monthrange
     import altair as alt
 
-    st.subheader("Predictibility – Running Month Enrolment Forecast")
+    st.subheader("Predictibility – Running Month Enrolment Forecast (row counts)")
 
-    # ---------- Resolve columns ----------
-    def _pick(col, df, cands):
-        if col and col in df.columns: return col
+    # ---------- Resolve columns (Create / Payment / Source) ----------
+    def _pick(df, preferred, cands):
+        if preferred and preferred in df.columns: return preferred
         for c in cands:
             if c in df.columns: return c
         return None
 
-    _create = _pick(globals().get("create_col"), df_f, ["Create Date","Created Date","Deal Create Date","CreateDate","Created On"])
-    _pay    = _pick(globals().get("pay_col"),    df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate","Paid On"])
-    _src    = _pick(globals().get("source_col"), df_f, ["JetLearn Deal Source","Deal Source","Source","_src_raw","Lead Source"])
-    _idcol  = _pick(None, df_f, ["Deal ID","HS Deal ID","HubSpot Deal ID","DealId","Id","ID","Record ID"])
+    _create = _pick(df_f, globals().get("create_col"), ["Create Date","Created Date","Deal Create Date","CreateDate","Created On"])
+    _pay    = _pick(df_f, globals().get("pay_col"),    ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate","Paid On"])
+    _src    = _pick(df_f, globals().get("source_col"), ["JetLearn Deal Source","Deal Source","Source","_src_raw","Lead Source"])
 
     if not _create or not _pay:
-        st.warning("Predictibility needs 'Create Date' and 'Payment Received Date' columns. Map them in the sidebar.", icon="⚠️")
+        st.warning("Predictibility needs 'Create Date' and 'Payment Received Date' columns. Please map them.", icon="⚠️")
     else:
         # ---------- Controls ----------
         c1, c2 = st.columns(2)
         with c1:
             lookback = st.selectbox("Lookback months (exclude current)", [3, 6, 12], index=0)
         with c2:
-            weighted = st.checkbox("Recency-weighted learning", value=True)
+            weighted = st.checkbox("Recency-weighted learning", value=True, help="Weights recent months higher when estimating daily averages.")
 
         # ---------- Prep dataframe ----------
         dfp = df_f.copy()
@@ -3189,55 +3188,44 @@ elif view == "Predictibility":
         if _src: dfp["_SRC"] = dfp[_src].fillna("Unknown").astype(str)
         else:    dfp["_SRC"] = "All"
 
-        if _idcol and _idcol in dfp.columns:
-            dfp["_ID"] = dfp[_idcol].astype(str)
-        else:
-            # fallback to row-index id (less ideal if multiple payment rows exist)
-            dfp["_ID"] = dfp.index.astype(str)
-
-        # ---------- Month window ----------
+        # ---------- Current month window ----------
         today_d = date.today()
-        mstart = date(today_d.year, today_d.month, 1)
-        mlen   = monthrange(today_d.year, today_d.month)[1]
-        mend   = date(today_d.year, today_d.month, mlen)
+        mstart  = date(today_d.year, today_d.month, 1)
+        mlen    = monthrange(today_d.year, today_d.month)[1]
+        mend    = date(today_d.year, today_d.month, mlen)
         days_elapsed = (today_d - mstart).days + 1
         days_left    = max(0, mlen - days_elapsed)
 
-        # ---------- A: actual enrolments to-date (UNIQUE DEALS) ----------
-        mask_pay_cur = dfp["_P"].dt.date.between(mstart, today_d)
-        A_actual = int(dfp.loc[mask_pay_cur, "_ID"].nunique())
+        # ---------- A: actual enrolments to-date (ROW COUNT) ----------
+        mask_pay_cur_mtd = dfp["_P"].dt.date.between(mstart, today_d)
+        A_actual = int(mask_pay_cur_mtd.sum())
 
-        # ---------- Learn historical DAILY averages (same vs prev) ----------
+        # ---------- Learn historical DAILY averages (row counts) ----------
         # For each of the last K full months (excluding current):
-        #   pay_u   = unique deals paid in that month
-        #   same_u  = subset of pay_u with CreateMonth == PayMonth
-        #   prev_u  = subset with CreateMonth < PayMonth
-        cur_per = pd.Period(today_d, freq="M")
-        months = [cur_per - i for i in range(1, lookback+1)]
+        #   pay_rows  = rows with Payment in that month
+        #   same_rows = subset of pay_rows with CreateMonth == PayMonth
+        #   prev_rows = subset with CreateMonth <  PayMonth
+        cur_per  = pd.Period(today_d, freq="M")
+        months   = [cur_per - i for i in range(1, lookback+1)]
         hist_rows = []
-
         for per in months:
             ms = date(per.year, per.month, 1)
             ml = monthrange(per.year, per.month)[1]
             me = date(per.year, per.month, ml)
-            pay_mask = dfp["_P"].dt.date.between(ms, me)
 
-            sub = dfp.loc[pay_mask, ["_ID","_C","_P"]].copy()
-            if sub.empty:
+            pay_mask = dfp["_P"].dt.date.between(ms, me)
+            if not pay_mask.any():
                 hist_rows.append({"per": per, "days": ml, "pay": 0, "same": 0, "prev": 0})
                 continue
 
-            sub["C_per"] = sub["_C"].dt.to_period("M")
-            sub["P_per"] = sub["_P"].dt.to_period("M")
+            c_per = dfp["_C"].dt.to_period("M")
+            p_per = dfp["_P"].dt.to_period("M")
 
-            # unique deals paid this month
-            pay_u = sub["_ID"].nunique()
-            # unique deals whose create-month == pay-month
-            same_u = sub.loc[sub["C_per"] == per, "_ID"].nunique()
-            # unique deals whose create-month < pay-month
-            prev_u = sub.loc[sub["C_per"] <  per, "_ID"].nunique()
+            pay_rows  = int(pay_mask.sum())
+            same_rows = int((pay_mask & (c_per == per)).sum())
+            prev_rows = int((pay_mask & (c_per <  per)).sum())
 
-            hist_rows.append({"per": per, "days": ml, "pay": pay_u, "same": same_u, "prev": prev_u})
+            hist_rows.append({"per": per, "days": ml, "pay": pay_rows, "same": same_rows, "prev": prev_rows})
 
         hist = pd.DataFrame(hist_rows)
         if hist.empty:
@@ -3247,72 +3235,69 @@ elif view == "Predictibility":
             if weighted:
                 hist = hist.sort_values("per")
                 hist["w"] = np.arange(1, len(hist)+1)  # 1..K
+                w_days = (hist["days"] * hist["w"]).sum()
                 w_same = (hist["same"] * hist["w"]).sum()
                 w_prev = (hist["prev"] * hist["w"]).sum()
-                w_days = (hist["days"] * hist["w"]).sum()
             else:
+                w_days = hist["days"].sum()
                 w_same = hist["same"].sum()
                 w_prev = hist["prev"].sum()
-                w_days = hist["days"].sum()
             daily_same = (w_same / w_days) if w_days > 0 else 0.0
             daily_prev = (w_prev / w_days) if w_days > 0 else 0.0
 
-        # ---------- Remaining forecast ----------
+        # ---------- Forecast remaining (row counts) ----------
         B_same = float(daily_same * days_left)
         C_prev = float(daily_prev * days_left)
         proj_month_end = float(A_actual + B_same + C_prev)
 
         # ---------- KPIs ----------
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("A · Actual to date (unique deals)", f"{A_actual:,}", help=f"Payments between {mstart.isoformat()} and {today_d.isoformat()}")
-        k2.metric("B · Remaining (same-month creates)", f"{B_same:.1f}", help=f"From deals created in {today_d.strftime('%b %Y')} expected in remaining {days_left} day(s)")
-        k3.metric("C · Remaining (prev-month creates)", f"{C_prev:.1f}", help="From deals created before this month expected in remaining days")
+        k1.metric("A · Actual to date (row count)", f"{A_actual:,}", help=f"Payments between {mstart.isoformat()} and {today_d.isoformat()}")
+        k2.metric("B · Remaining (same-month creates)", f"{B_same:.1f}", help=f"Expected in remaining {days_left} day(s) from deals created this month")
+        k3.metric("C · Remaining (prev-months creates)", f"{C_prev:.1f}", help="Expected in remaining days from deals created before this month")
         k4.metric("Projected Month-End", f"{proj_month_end:.1f}", help="A + B + C")
 
         st.caption(
             f"Month **{mstart.strftime('%b %Y')}** • Days elapsed **{days_elapsed}/{mlen}** • "
-            f"Hist daily (same, prev): **{daily_same:.2f}**, **{daily_prev:.2f}** (lookback={lookback}{', weighted' if weighted else ''})"
+            f"Hist daily (same, prev): **{daily_same:.2f}**, **{daily_prev:.2f}** "
+            f"(lookback={lookback}{', weighted' if weighted else ''})"
         )
 
-        # ---------- Per-source breakdown ----------
-        # Current-month actual A by source (unique deals)
+        # ---------- Per-source breakdown (row counts) ----------
+        # A_by_src = current-month actual payment rows by source.
         a_by_src = (
-            dfp.loc[mask_pay_cur, ["_SRC","_ID"]]
-               .dropna(subset=["_SRC"])
-               .drop_duplicates()
-               .groupby("_SRC")["_ID"].nunique()
+            dfp.loc[mask_pay_cur_mtd, ["_SRC"]]
+               .assign(_ones=1)
+               .groupby("_SRC")["_ones"].sum()
                .rename("A_Actual_ToDate")
                .reset_index()
         )
 
-        # Historical distribution by source for SAME/PREV to allocate B and C
-        def hist_dist(component_col):
-            rows = []
+        # Build historical distributions for SAME/PREV by source (row counts)
+        def hist_dist(component):
+            parts = []
             for per in months:
                 ms = date(per.year, per.month, 1)
                 ml = monthrange(per.year, per.month)[1]
                 me = date(per.year, per.month, ml)
                 pay_mask = dfp["_P"].dt.date.between(ms, me)
-                sub = dfp.loc[pay_mask, ["_SRC","_ID","_C","_P"]].copy()
-                if sub.empty:
+                if not pay_mask.any(): 
                     continue
-                sub["C_per"] = sub["_C"].dt.to_period("M")
-                sub["P_per"] = sub["_P"].dt.to_period("M")
-                if component_col == "same":
-                    sub = sub.loc[sub["C_per"] == per]
+                c_per = dfp["_C"].dt.to_period("M")
+                subset = dfp.loc[pay_mask].copy()
+                if component == "same":
+                    subset = subset.loc[c_per.loc[subset.index] == per]
                 else:
-                    sub = sub.loc[sub["C_per"] <  per]
-                if sub.empty: 
+                    subset = subset.loc[c_per.loc[subset.index] <  per]
+                if subset.empty: 
                     continue
-                subsum = sub.drop_duplicates(["_SRC","_ID"]).groupby("_SRC")["_ID"].nunique().rename("cnt")
-                subsum = subsum.reset_index()
-                subsum["per"] = per
-                rows.append(subsum)
-            if not rows:
+                grp = subset.groupby("_SRC").size().rename("cnt").reset_index()
+                grp["per"] = per
+                parts.append(grp)
+            if not parts:
                 return pd.DataFrame(columns=["_SRC","cnt"])
-            dist = pd.concat(rows, ignore_index=True)
+            dist = pd.concat(parts, ignore_index=True)
             if weighted and "per" in dist.columns:
-                # attach weights by month recency
                 per_to_w = {p: (i+1) for i, p in enumerate(sorted(months))}
                 dist["w"] = dist["per"].map(per_to_w).fillna(1)
                 dist["wcnt"] = dist["cnt"] * dist["w"]
@@ -3324,13 +3309,13 @@ elif view == "Predictibility":
         same_dist = hist_dist("same")
         prev_dist = hist_dist("prev")
 
-        # Build the universe of sources we will show
+        # Universe of sources to display
         all_srcs = sorted(set(a_by_src["_SRC"]).union(set(same_dist["_SRC"])).union(set(prev_dist["_SRC"])) or {"All"})
         out = pd.DataFrame({"Source": all_srcs})
         out = out.merge(a_by_src.rename(columns={"_SRC":"Source"}), on="Source", how="left").fillna({"A_Actual_ToDate":0})
 
-        # Allocate B & C proportionally by historical distributions (fallback to A mix, else equal)
-        def alloc_total(total, dist_df, fallback_series):
+        # Allocate B and C to sources proportionally (fallbacks applied)
+        def _alloc(total, dist_df, fallback_series):
             if dist_df.empty:
                 weights = fallback_series.copy()
             else:
@@ -3345,12 +3330,12 @@ elif view == "Predictibility":
             return (total * w).reindex(all_srcs).values
 
         fallback = out.set_index("Source")["A_Actual_ToDate"].astype(float)
-        out["B_Remaining_SameMonth"]   = alloc_total(B_same, same_dist, fallback)
-        out["C_Remaining_PrevMonths"]  = alloc_total(C_prev, prev_dist, fallback)
+        out["B_Remaining_SameMonth"]   = _alloc(B_same,  same_dist, fallback)
+        out["C_Remaining_PrevMonths"]  = _alloc(C_prev, prev_dist, fallback)
         out["Projected_MonthEnd_Total"] = out["A_Actual_ToDate"] + out["B_Remaining_SameMonth"] + out["C_Remaining_PrevMonths"]
         out = out.sort_values("Projected_MonthEnd_Total", ascending=False)
 
-        # ---------- Chart ----------
+        # Chart
         chart_df = out.melt(id_vars=["Source"], 
                             value_vars=["A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths"],
                             var_name="Component", value_name="Count")
@@ -3364,25 +3349,21 @@ elif view == "Predictibility":
             use_container_width=True
         )
 
-        # ---------- Table + download ----------
+        # Table + download
         with st.expander("Detailed table (by source)"):
             show_cols = ["Source","A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total"]
             tbl = out[show_cols].copy()
             for c in show_cols[1:]:
                 tbl[c] = tbl[c].astype(float).round(3)
             st.dataframe(tbl, use_container_width=True)
-            st.download_button(
-                "Download CSV",
-                tbl.to_csv(index=False).encode("utf-8"),
-                file_name="predictibility_by_source.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download CSV", tbl.to_csv(index=False).encode("utf-8"),
+                               file_name="predictibility_by_source.csv", mime="text/csv")
 
-        # ---------- Debug expander (optional) ----------
-        with st.expander("Debug / sanity checks"):
+        # Optional quick sanity panel
+        with st.expander("Sanity checks"):
             st.write({
-                "Create col": _create, "Payment col": _pay, "Source col": _src or "All", "ID col": _idcol or "index",
-                "A_actual_unique": A_actual, "days_elapsed": days_elapsed, "days_left": days_left,
+                "Create col": _create, "Payment col": _pay, "Source col": _src or "All",
+                "A_actual_rows": A_actual, "days_left": days_left,
                 "daily_same_hist": round(daily_same, 3), "daily_prev_hist": round(daily_prev, 3),
                 "lookback": lookback, "weighted": weighted,
             })
