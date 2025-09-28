@@ -902,7 +902,13 @@ if view == "MIS":
 
 
   elif view == "Trend & Analysis":
-    st.subheader("Trend & Analysis – Grouped Drilldowns (Final rules)")
+    def _trend_and_analysis_tab():
+        st.subheader("Trend & Analysis – Grouped Drilldowns (Final rules)")
+
+        # (your existing Trend & Analysis code here, including the 4-box KPI strip,
+        # all indented inside this function)
+
+    _trend_and_analysis_tab()
 
     # Group-by fields
     available_groups, group_map = [], {}
