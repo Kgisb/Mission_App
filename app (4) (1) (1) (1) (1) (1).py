@@ -901,14 +901,7 @@ if view == "MIS":
 
 
 
-elif view == "Trend & Analysis":
-    st.subheader("Trend & Analysis – Grouped Drilldowns (Final rules)")
-    ...
-    # Mode
-    level = st.radio("Mode", ["MTD", "Cohort"], index=0, horizontal=True, key="ta_mode")
-
-    # === 4-BOX KPI STRIP (place right after the Mode radio) ===
-    # Resolve columns safely
+    # === BEGIN: 4-BOX KPI STRIP (ADDED ONLY; no other code changed) ===
     _ref_intent_col = find_col(df, ["Referral Intent Source", "Referral intent source"])
     _src_col        = source_col if (source_col and source_col in df_f.columns) else find_col(df, ["JetLearn Deal Source","Deal Source","Source"])
     _create_ok      = create_col and (create_col in df_f.columns)
@@ -917,22 +910,17 @@ elif view == "Trend & Analysis":
     if not (_create_ok and _pay_ok):
         st.warning("Create/Payment columns are needed for the KPI strip. Please map them in the sidebar.", icon="⚠️")
     else:
-        # --- Normalize dates/fields
+        # Normalize fields
         _C = coerce_datetime(df_f[create_col]).dt.date
         _P = coerce_datetime(df_f[pay_col]).dt.date
-        _SRC = (
-            df_f[_src_col].fillna("Unknown").astype(str).str.strip().str.lower()
-        ) if _src_col else pd.Series("unknown", index=df_f.index)
-        _REFI = (
-            df_f[_ref_intent_col].fillna("Unknown").astype(str).str.strip()
-        ) if _ref_intent_col and _ref_intent_col in df_f.columns else pd.Series("Unknown", index=df_f.index)
+        _SRC = (df_f[_src_col].fillna("Unknown").astype(str).str.strip().str.lower()) if _src_col else pd.Series("unknown", index=df_f.index)
+        _REFI = (df_f[_ref_intent_col].fillna("Unknown").astype(str).str.strip()) if _ref_intent_col and _ref_intent_col in df_f.columns else pd.Series("Unknown", index=df_f.index)
 
-        # --- Window helpers
+        # Windows
         def _ymd(d): return d
         tm_start, tm_end = month_bounds(today)
         lm_start, lm_end = last_month_bounds(today)
         yd = today - timedelta(days=1)
-
         windows = [
             ("Yesterday", _ymd(yd), _ymd(yd)),
             ("Today", _ymd(today), _ymd(today)),
@@ -940,7 +928,7 @@ elif view == "Trend & Analysis":
             ("This month", _ymd(tm_start), _ymd(tm_end)),
         ]
 
-        # --- Counting logic that respects MTD vs Cohort
+        # Counters respecting MTD/Cohort
         def _counts_for_window(start_d: date, end_d: date, mode: str) -> dict:
             c_in = _C.between(start_d, end_d)
             p_in = _P.between(start_d, end_d)
@@ -966,6 +954,7 @@ elif view == "Trend & Analysis":
 
         kpis = [(label, _counts_for_window(s, e, level)) for (label, s, e) in windows]
 
+        # Render
         st.markdown(
             """
             <style>
@@ -988,12 +977,8 @@ elif view == "Trend & Analysis":
             _html.append("</div>")
         _html.append("</div>")
         st.markdown("".join(_html), unsafe_allow_html=True)
-    # === end 4-BOX KPI STRIP ===
+    # === END: 4-BOX KPI STRIP ===
 
-    # Date scope
-    date_mode = st.radio("Date scope", ["This month", "Last month", "Custom date range"], index=0, horizontal=True, key="ta_dscope")
-    ...
-# ---- END Trend & Analysis tab ----
 
 elif view == "80-20":
     st.subheader("80-20 Pareto + Trajectory + Conversion% + Mix Analyzer")
