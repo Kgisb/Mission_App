@@ -166,7 +166,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement"],  # ← add this
+        ["Dashboard", "MIS", "Predictibility", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -2985,207 +2985,168 @@ elif view == "AC Wise Detail":
                 key="ac_stack_dl_conv"
             )
 elif view == "Dashboard":
-    st.subheader("Dashboard — Business Snapshot")
+    st.subheader("Dashboard – Key Business Snapshot")
 
-    # =========================
-    # Safe base dataframe pick
-    # =========================
-    try:
-        base = df_f.copy()
-    except NameError:
-        base = df.copy()
+    # ---- Resolve core columns (Create / Payment) defensively
+    _create = create_col if create_col in df_f.columns else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+    _pay    = pay_col    if pay_col    in df_f.columns else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
 
-    # =========================
-    # Local helpers (self-contained)
-    # =========================
-    def _get_col(dframe, candidates):
-        """
-        Return the first existing column from candidates.
-        Tries exact, stripped, and case-insensitive matches.
-        """
-        cols = list(dframe.columns)
-        # exact
-        for c in candidates:
-            if c in cols:
-                return c
-        # strip compare
-        strip_map = {c: c.strip() for c in cols}
-        for c in candidates:
-            for orig, stripped in strip_map.items():
-                if stripped == c:
-                    return orig
-        # case-insensitive strip
-        low_map = {c.lower().strip(): c for c in cols}
-        for c in candidates:
-            key = c.lower().strip()
-            if key in low_map:
-                return low_map[key]
-        return None
-
-    def _to_dt(series):
-        """Coerce to pandas datetime (errors->NaT)."""
-        return pd.to_datetime(series, errors="coerce")
-
-    def _norm_str(s):
-        """Normalize string series safely."""
-        return s.fillna("").astype(str).str.strip()
-
-    def _month_bounds(any_date):
-        """Return first_day, last_day for the calendar month of a date."""
-        first = any_date.replace(day=1)
-        # next month begin
-        next_month = (pd.Timestamp(first) + pd.offsets.MonthBegin(1)).date()
-        last = (pd.Timestamp(next_month) - pd.Timedelta(days=1)).date()
-        return first, last
-
-    # =========================
-    # Column resolution
-    # =========================
-    CREATE_COL  = _get_col(base, ["Create Date"])
-    PAY_COL     = _get_col(base, ["Payment Received Date", "Payment Received Date "])  # trailing space variant
-    SRC_COL     = _get_col(base, ["JetLearn Deal Source", "_src_raw"])
-    REF_INTENT  = _get_col(base, ["Referral Intent Source"])
-
-    # Guard rails — warn if missing
-    missing = [label for label, col in [
-        ("Create Date", CREATE_COL),
-        ("Payment Received Date", PAY_COL),
-        ("JetLearn Deal Source", SRC_COL),
-        ("Referral Intent Source", REF_INTENT),
-    ] if col is None]
-    if missing:
-        st.warning(
-            "Missing columns: " + ", ".join(missing) + ". Some dashboard metrics may be zero.",
-            icon="⚠️"
+    if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
+        st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
+    else:
+        # ---- Date presets
+        preset = st.selectbox(
+            "Range",
+            ["Today", "Yesterday", "This month", "Last 7 days", "Custom"],
+            index=2,
+            help="Pick the window for KPIs."
         )
 
-    # =========================
-    # Parse dates & normalize text
-    # =========================
-    c_dt = _to_dt(base[CREATE_COL]) if CREATE_COL else pd.Series(pd.NaT, index=base.index)
-    p_dt = _to_dt(base[PAY_COL])    if PAY_COL   else pd.Series(pd.NaT, index=base.index)
-
-    src  = _norm_str(base[SRC_COL])     if SRC_COL    else pd.Series("", index=base.index)
-    rint = _norm_str(base[REF_INTENT])  if REF_INTENT else pd.Series("", index=base.index)
-
-    # Referral / Intent matchers (based on your sheet values)
-    # - Source uses "Referrals" (plural). Be robust: any text containing "referr".
-    is_referral = src.str.contains("referr", case=False, na=False)
-    # - Intent should include "Sales Generated" variants (e.g., "Gift Card - Sales Generated")
-    is_sales_generated = rint.str.contains(r"Sales Generated", case=False, na=False)
-
-    # =========================
-    # Time windows (Asia/Kolkata)
-    # =========================
-    now_ist = pd.Timestamp.now(tz="Asia/Kolkata")
-    today = now_ist.date()
-    yesterday = (now_ist - pd.Timedelta(days=1)).date()
-
-    # Current month (window for "This Month")
-    cm_start = today.replace(day=1)
-    cm_end = today  # inclusive up to today
-
-    # Last month window (full calendar month)
-    lm_start_tmp, lm_end_tmp = _month_bounds((pd.Timestamp(cm_start) - pd.Timedelta(days=1)).date())
-    lm_start, lm_end = lm_start_tmp, lm_end_tmp
-
-    # Date-between helper over .dt.date
-    def _between(series_dt, start_d, end_d):
-        s_date = series_dt.dt.date
-        return s_date.between(start_d, end_d, inclusive="both")
-
-    # =========================
-    # Mode toggle (per your definition)
-    # =========================
-    mode = st.radio(
-        "Counting mode",
-        ["Cohort", "MTD"],   # Cohort default
-        index=0,
-        horizontal=True,
-        help=(
-            "Cohort: Outputs in the selected period; deal Create Date can be anything.\n"
-            "MTD: Enrolments only count if the deal was CREATED in the active calendar month of that period."
-        ),
-    )
-
-    # =========================
-    # Metric computer
-    # =========================
-    def compute_metrics(window_start, window_end, active_month_start, active_month_end):
-        """
-        window_* : the visible KPI window (e.g., Yesterday, Today, Last Month, This Month)
-        active_month_* : the full calendar month corresponding to the window (for MTD enrolment restriction)
-        """
-        # Created-based masks (by Create Date in the window)
-        deals_created_mask = _between(c_dt, window_start, window_end)
-        referral_created_mask = deals_created_mask & is_referral
-        referral_sales_from_created = referral_created_mask & is_sales_generated
-
-        # Payments in window (by Payment Received Date)
-        payments_in_window = _between(p_dt, window_start, window_end)
-
-        # Enrolments logic
-        if mode == "Cohort":
-            enrol_count = int(payments_in_window.sum())  # payment-by-date only
+        today_d = date.today()
+        if preset == "Today":
+            start_d, end_d = today_d, today_d
+        elif preset == "Yesterday":
+            yd = today_d - timedelta(days=1)
+            start_d, end_d = yd, yd
+        elif preset == "This month":
+            mstart, mend = month_bounds(today_d)
+            start_d, end_d = mstart, mend
+        elif preset == "Last 7 days":
+            start_d, end_d = today_d - timedelta(days=6), today_d
         else:
-            # MTD: restrict enrolments to deals created in the active calendar month
-            created_in_active_month = _between(c_dt, active_month_start, active_month_end)
-            enrol_count = int((payments_in_window & created_in_active_month).sum())
+            # Custom
+            d1, d2 = st.date_input(
+                "Custom range",
+                value=(today_d.replace(day=1), today_d),
+                help="Select start and end (inclusive)."
+            )
+            if isinstance(d1, tuple) or isinstance(d2, tuple):  # safety
+                d1, d2 = d1[0], d2[0]
+            start_d, end_d = (min(d1, d2), max(d1, d2))
 
-        return {
-            "Deals Created": int(deals_created_mask.sum()),
-            "Enrolments": enrol_count,
-            "Referral Deals Created": int(referral_created_mask.sum()),
-            "Referral – Sales Generated": int(referral_sales_from_created.sum()),
-        }
+        # ---- Mode toggle (default Cohort)
+        mode = st.radio(
+            "Mode",
+            ["Cohort (Payment Month)", "MTD (Created Cohort)"],
+            horizontal=True,
+            index=0,
+            help=(
+                "Cohort: numerator = payments in window (Create can be any time); "
+                "denominator = deals created in window. "
+                "MTD: numerator = payments in window AND created in window; "
+                "denominator = deals created in window."
+            )
+        )
 
-    # =========================
-    # Define periods & their active months
-    # =========================
-    # Yesterday
-    y_m_start, y_m_end = _month_bounds(yesterday)
-    # Today
-    t_m_start, t_m_end = _month_bounds(today)
-    # Last Month (active month is the last calendar month)
-    lm_m_start, lm_m_end = lm_start, lm_end
-    # This Month (active month is the current calendar month)
-    tm_m_start, tm_m_end = _month_bounds(today)
+        # ---- Normalize timestamps
+        c_ts = coerce_datetime(df_f[_create]).dt.date
+        p_ts = coerce_datetime(df_f[_pay]).dt.date
 
-    PERIODS = [
-        # label, window_start, window_end, active_month_start, active_month_end
-        ("Yesterday", yesterday, yesterday, y_m_start, y_m_end),
-        ("Today", today, today, t_m_start, t_m_end),
-        ("Last Month", lm_start, lm_end, lm_m_start, lm_m_end),
-        ("This Month", cm_start, cm_end, tm_m_start, tm_m_end),
-    ]
+        # Inclusive window mask helpers
+        def between_date(s, a, b):  # s is date series
+            return s.notna() & (s >= a) & (s <= b)
 
-    # =========================
-    # Render four KPI boxes
-    # =========================
-    c1, c2, c3, c4 = st.columns(4)
-    cols = [c1, c2, c3, c4]
+        # Denominator: deals created in window (common to both modes)
+        mask_created_in_win = between_date(c_ts, start_d, end_d)
+        denom_created = int(mask_created_in_win.sum())
 
-    for (title, w_start, w_end, m_start, m_end), col in zip(PERIODS, cols):
-        mets = compute_metrics(w_start, w_end, m_start, m_end)
-        with col:
-            st.markdown(f"### {title}")
+        # Numerator logic
+        if mode.startswith("MTD"):
+            # Payments in window AND created in window
+            num_mask = mask_created_in_win & between_date(p_ts, start_d, end_d)
+        else:
+            # Cohort: payments in window (ignore Create Date)
+            num_mask = between_date(p_ts, start_d, end_d)
+
+        numerator_payments = int(num_mask.sum())
+        conv_pct = (numerator_payments / denom_created * 100.0) if denom_created > 0 else np.nan
+
+        # ---- KPIs
+        st.markdown(
+            """
+            <style>
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 12px 14px; background: #ffffff; }
+              .kpi-title { font-size: 0.85rem; color: #6b7280; margin-bottom: 6px; }
+              .kpi-value { font-size: 1.6rem; font-weight: 700; }
+              .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
             st.markdown(
-                f"""
-                <div style="border:1px solid #e5e7eb; border-radius:14px; padding:10px; background:#ffffff;">
-                  <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                    <span><strong>Deals Created</strong></span><span>{mets['Deals Created']}</span>
-                  </div>
-                  <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                    <span><strong>Enrolments</strong></span><span>{mets['Enrolments']}</span>
-                  </div>
-                  <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                    <span><strong>Referral Deals Created</strong></span><span>{mets['Referral Deals Created']}</span>
-                  </div>
-                  <div style="display:flex; justify-content:space-between;">
-                    <span><strong>Referral – Sales Generated</strong></span><span>{mets['Referral – Sales Generated']}</span>
-                  </div>
-                </div>
-                """,
+                f"<div class='kpi-card'><div class='kpi-title'>Deals Created</div>"
+                f"<div class='kpi-value'>{denom_created:,}</div>"
+                f"<div class='kpi-sub'>{start_d.isoformat()} → {end_d.isoformat()}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with col2:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Enrolments (Payments)</div>"
+                f"<div class='kpi-value'>{numerator_payments:,}</div>"
+                f"<div class='kpi-sub'>Mode: {mode}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with col3:
+            conv_txt = "–" if np.isnan(conv_pct) else f"{conv_pct:.1f}%"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Conversion%</div>"
+                f"<div class='kpi-value'>{conv_txt}</div>"
+                f"<div class='kpi-sub'>Numerator/Denominator per selected Mode</div></div>",
                 unsafe_allow_html=True,
             )
 
+        # ---- Optional detail tables
+        with st.expander("Breakout by Deal Source"):
+            src_col = source_col if source_col in df_f.columns else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+            if not src_col or src_col not in df_f.columns:
+                st.info("Deal Source column not found.")
+            else:
+                view_cols = [src_col]
+                # Created in window
+                created_by_src = (
+                    df_f.loc[mask_created_in_win, view_cols]
+                    .assign(_ones=1)
+                    .groupby(src_col, dropna=False)["_ones"].sum()
+                    .rename("DealsCreated")
+                    .reset_index()
+                )
+                # Payments per mode
+                paid_by_src = (
+                    df_f.loc[num_mask, view_cols]
+                    .assign(_ones=1)
+                    .groupby(src_col, dropna=False)["_ones"].sum()
+                    .rename("Enrolments")
+                    .reset_index()
+                )
+                out = created_by_src.merge(paid_by_src, on=src_col, how="outer").fillna(0)
+                out["Conversion%"] = np.where(out["DealsCreated"] > 0, (out["Enrolments"] / out["DealsCreated"]) * 100.0, np.nan)
+                out = out.sort_values("Enrolments", ascending=False)
+                st.dataframe(out, use_container_width=True)
+
+        with st.expander("Breakout by Country"):
+            ctry_col = country_col if country_col in df_f.columns else find_col(df_f, ["Country","Student Country","Deal Country"])
+            if not ctry_col or ctry_col not in df_f.columns:
+                st.info("Country column not found.")
+            else:
+                view_cols = [ctry_col]
+                created_by_ctry = (
+                    df_f.loc[mask_created_in_win, view_cols]
+                    .assign(_ones=1)
+                    .groupby(ctry_col, dropna=False)["_ones"].sum()
+                    .rename("DealsCreated")
+                    .reset_index()
+                )
+                paid_by_ctry = (
+                    df_f.loc[num_mask, view_cols]
+                    .assign(_ones=1)
+                    .groupby(ctry_col, dropna=False)["_ones"].sum()
+                    .rename("Enrolments")
+                    .reset_index()
+                )
+                outc = created_by_ctry.merge(paid_by_ctry, on=ctry_col, how="outer").fillna(0)
+                outc["Conversion%"] = np.where(outc["DealsCreated"] > 0, (outc["Enrolments"] / outc["DealsCreated"]) * 100.0, np.nan)
+                outc = outc.sort_values("Enrolments", ascending=False)
+                st.dataframe(outc, use_container_width=True)
