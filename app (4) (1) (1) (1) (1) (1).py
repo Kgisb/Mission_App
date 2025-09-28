@@ -914,6 +914,107 @@ elif view == "Trend & Analysis":
 
     # Mode
     level = st.radio("Mode", ["MTD", "Cohort"], index=0, horizontal=True, key="ta_mode")
+# === 4-BOX KPI STRIP (place right after the Mode radio) ===
+
+# Resolve columns safely
+_ref_intent_col = find_col(df, ["Referral Intent Source", "Referral intent source"])
+_src_col        = source_col if (source_col and source_col in df_f.columns) else find_col(df, ["JetLearn Deal Source","Deal Source","Source"])
+_create_ok      = create_col and (create_col in df_f.columns)
+_pay_ok         = pay_col and (pay_col in df_f.columns)
+
+if not (_create_ok and _pay_ok):
+    st.warning("Create/Payment columns are needed for the KPI strip. Please map them in the sidebar.", icon="⚠️")
+else:
+    # --- Normalize dates/fields
+    _C = coerce_datetime(df_f[create_col]).dt.date
+    _P = coerce_datetime(df_f[pay_col]).dt.date
+    _SRC = (
+        df_f[_src_col].fillna("Unknown").astype(str).str.strip().str.lower()
+    ) if _src_col else pd.Series("unknown", index=df_f.index)
+    _REFI = (
+        df_f[_ref_intent_col].fillna("Unknown").astype(str).str.strip()
+    ) if _ref_intent_col and _ref_intent_col in df_f.columns else pd.Series("Unknown", index=df_f.index)
+
+    # --- Window helpers
+    def _ymd(d): return d  # dates are already date objects from helpers
+    tm_start, tm_end = month_bounds(today)
+    lm_start, lm_end = last_month_bounds(today)
+    yd = today - timedelta(days=1)
+
+    windows = [
+        ("Yesterday", _ymd(yd), _ymd(yd)),
+        ("Today", _ymd(today), _ymd(today)),
+        ("Last month", _ymd(lm_start), _ymd(lm_end)),
+        ("This month", _ymd(tm_start), _ymd(tm_end)),
+    ]
+
+    # --- Counting logic that respects MTD vs Cohort
+    def _counts_for_window(start_d: date, end_d: date, mode: str) -> dict:
+        # In-range masks
+        c_in = _C.between(start_d, end_d)
+        p_in = _P.between(start_d, end_d)
+
+        # Deals Created (always by Create Date in window)
+        deals_created = int(c_in.sum())
+
+        # Enrolments (payments)
+        if mode == "MTD":
+            enrolments = int((c_in & p_in).sum())   # both created & paid in window
+        else:
+            enrolments = int(p_in.sum())            # paid in window regardless of create
+
+        # Referral deals (JetLearn Deal Source == 'referral')
+        if _src_col:
+            is_referral_src = (_SRC == "referral")
+            if mode == "MTD":
+                referral_deals = int((c_in & is_referral_src).sum())          # referral deals created in window
+            else:
+                referral_deals = int((p_in & is_referral_src).sum())          # referral deals paid in window
+        else:
+            referral_deals = 0
+
+        # Referral sales (from Referral Intent Source) = payments with a known Referral Intent Source
+        has_ref_intent = _REFI.str.len().gt(0) & (_REFI.str.lower() != "unknown")
+        if mode == "MTD":
+            ref_sales = int((p_in & c_in & has_ref_intent).sum())
+        else:
+            ref_sales = int((p_in & has_ref_intent).sum())
+
+        return {
+            "Deals Created": deals_created,
+            "Enrolments": enrolments,
+            "Referral (JLS)": referral_deals,
+            "Referral Sales (Intent)": ref_sales,
+        }
+
+    # --- Compute for all four windows
+    kpis = [(label, _counts_for_window(s, e, level)) for (label, s, e) in windows]
+
+    # --- Minimal styling + render
+    st.markdown(
+        """
+        <style>
+          .kpi4-grid {display:grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-top: 8px;}
+          .kpi4-card {border:1px solid #e5e7eb; border-radius:14px; padding:10px 12px; background:#ffffff;}
+          .kpi4-title {font-weight:700; font-size:0.95rem; margin-bottom:6px;}
+          .kpi4-row {display:flex; justify-content:space-between; font-size:0.9rem; padding:2px 0;}
+          .kpi4-key {color:#6b7280;}
+          .kpi4-val {font-weight:700;}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Build HTML so it stays compact and at the very top of the tab
+    _html = ['<div class="kpi4-grid">']
+    for label, vals in kpis:
+        _html.append(f'<div class="kpi4-card"><div class="kpi4-title">{label}</div>')
+        for k in ["Deals Created","Enrolments","Referral (JLS)","Referral Sales (Intent)"]:
+            _html.append(f'<div class="kpi4-row"><div class="kpi4-key">{k}</div><div class="kpi4-val">{vals[k]:,}</div></div>')
+        _html.append("</div>")
+    _html.append("</div>")
+    st.markdown("".join(_html), unsafe_allow_html=True)
+# === end 4-BOX KPI STRIP ===
 
     # Date scope
     date_mode = st.radio("Date scope", ["This month", "Last month", "Custom date range"], index=0, horizontal=True, key="ta_dscope")
