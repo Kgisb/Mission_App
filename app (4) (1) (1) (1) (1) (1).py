@@ -936,7 +936,7 @@ else:
     ) if _ref_intent_col and _ref_intent_col in df_f.columns else pd.Series("Unknown", index=df_f.index)
 
     # --- Window helpers
-    def _ymd(d): return d  # dates are already date objects from helpers
+    def _ymd(d): return d
     tm_start, tm_end = month_bounds(today)
     lm_start, lm_end = last_month_bounds(today)
     yd = today - timedelta(days=1)
@@ -950,7 +950,6 @@ else:
 
     # --- Counting logic that respects MTD vs Cohort
     def _counts_for_window(start_d: date, end_d: date, mode: str) -> dict:
-        # In-range masks
         c_in = _C.between(start_d, end_d)
         p_in = _P.between(start_d, end_d)
 
@@ -963,17 +962,17 @@ else:
         else:
             enrolments = int(p_in.sum())            # paid in window regardless of create
 
-        # Referral deals (JetLearn Deal Source == 'referral')
+        # Referral deals/payments (JetLearn Deal Source contains 'referral')
         if _src_col:
-            is_referral_src = (_SRC == "referral")
+            is_referral_src = _SRC.str.contains(r"\breferral\b", case=False, na=False)
             if mode == "MTD":
-                referral_deals = int((c_in & is_referral_src).sum())          # referral deals created in window
+                referral_deals = int((c_in & is_referral_src).sum())   # referral deals created in window
             else:
-                referral_deals = int((p_in & is_referral_src).sum())          # referral deals paid in window
+                referral_deals = int((p_in & is_referral_src).sum())   # referral payments in window
         else:
             referral_deals = 0
 
-        # Referral sales (from Referral Intent Source) = payments with a known Referral Intent Source
+        # Referral sales (from Referral Intent Source) = payments with a known (non-empty, non-'Unknown') value
         has_ref_intent = _REFI.str.len().gt(0) & (_REFI.str.lower() != "unknown")
         if mode == "MTD":
             ref_sales = int((p_in & c_in & has_ref_intent).sum())
@@ -1005,7 +1004,6 @@ else:
         unsafe_allow_html=True
     )
 
-    # Build HTML so it stays compact and at the very top of the tab
     _html = ['<div class="kpi4-grid">']
     for label, vals in kpis:
         _html.append(f'<div class="kpi4-card"><div class="kpi4-title">{label}</div>')
@@ -1015,6 +1013,7 @@ else:
     _html.append("</div>")
     st.markdown("".join(_html), unsafe_allow_html=True)
 # === end 4-BOX KPI STRIP ===
+
 
     # Date scope
     date_mode = st.radio("Date scope", ["This month", "Last month", "Custom date range"], index=0, horizontal=True, key="ta_dscope")
