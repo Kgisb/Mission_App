@@ -7,6 +7,7 @@ import altair as alt
 from datetime import date, timedelta
 from calendar import monthrange
 import re
+from datetime import date, timedelta
 
 # ======================
 # Page & minimal styling
