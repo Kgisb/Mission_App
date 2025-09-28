@@ -901,7 +901,7 @@ if view == "MIS":
 
 
 
- elif view == "Trend & Analysis":
+elif view == "Trend & Analysis":
     def _trend_and_analysis_tab():
         st.subheader("Trend & Analysis – Grouped Drilldowns (Final rules)")
 
