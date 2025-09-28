@@ -1276,6 +1276,8 @@ else:
             mime="text/csv",
             key="ta_ref_business_dl"
         )
+# ---- END Trend & Analysis tab ----
+
 
 elif view == "80-20":
     # Everything for 80-20 lives INSIDE this tab (own controls; no sidebar widgets)
