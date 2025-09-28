@@ -1282,6 +1282,8 @@ else:
 elif view == "80-20":
     # Everything for 80-20 lives INSIDE this tab (own controls; no sidebar widgets)
     st.subheader("80-20 Pareto + Trajectory + Conversion% + Mix Analyzer")
+    # ... your 80-20 code continues here ...
+
 
     # Precompute for this module
     df80 = df.copy()
