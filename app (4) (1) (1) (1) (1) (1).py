@@ -1003,7 +1003,7 @@ elif view == "Trend & Analysis":
                     else:
                         sales_generated_intent = 0
 
-                    # NEW: Calibration counts (respect MTD gating)
+                    # Calibration counts
                     first_cal_cnt = _event_count_in_window(_FDT, c_in, start_d, end_d, mode)
                     resched_cnt   = _event_count_in_window(_RDT, c_in, start_d, end_d, mode)
                     done_cnt      = _event_count_in_window(_DDT, c_in, start_d, end_d, mode)
@@ -1073,6 +1073,98 @@ elif view == "Trend & Analysis":
                 st.error("End date cannot be before start date.")
                 st.stop()
             st.caption(f"Scope: **Custom** ({range_start} → {range_end})")
+
+        # ================================
+        # DYNAMIC BOX for selected range
+        # ================================
+        try:
+            _ref_intent_col2 = find_col(df, ["Referral Intent Source", "Referral intent source"])
+            _src_col2        = source_col if (source_col and source_col in df_f.columns) \
+                               else find_col(df, ["JetLearn Deal Source","Deal Source","Source"])
+            _create_ok2      = create_col and (create_col in df_f.columns)
+            _pay_ok2         = pay_col and (pay_col in df_f.columns)
+
+            _first_ok2 = first_cal_sched_col and (first_cal_sched_col in df_f.columns)
+            _resch_ok2 = cal_resched_col and (cal_resched_col in df_f.columns)
+            _done_ok2  = cal_done_col and (cal_done_col in df_f.columns)
+
+            if _create_ok2 and _pay_ok2:
+                _C2 = coerce_datetime(df_f[create_col]).dt.date
+                _P2 = coerce_datetime(df_f[pay_col]).dt.date
+                _SRC2  = (df_f[_src_col2].fillna("Unknown").astype(str).str.strip()) if _src_col2 else pd.Series("Unknown", index=df_f.index)
+                _REFI2 = (df_f[_ref_intent_col2].fillna("Unknown").astype(str).str.strip()) if (_ref_intent_col2 and _ref_intent_col2 in df_f.columns) else pd.Series("Unknown", index=df_f.index)
+                _FDT2 = coerce_datetime(df_f[first_cal_sched_col]).dt.date if _first_ok2 else pd.Series(pd.NaT, index=df_f.index)
+                _RDT2 = coerce_datetime(df_f[cal_resched_col]).dt.date     if _resch_ok2 else pd.Series(pd.NaT, index=df_f.index)
+                _DDT2 = coerce_datetime(df_f[cal_done_col]).dt.date        if _done_ok2 else pd.Series(pd.NaT, index=df_f.index)
+
+                def _is_referral_created2(sr: pd.Series) -> pd.Series:
+                    s = sr.fillna("").astype(str)
+                    return s.str.contains("referr", case=False, na=False)
+
+                def _is_sales_generated_intent2(sr: pd.Series) -> pd.Series:
+                    s = sr.fillna("").astype(str)
+                    return s.str.contains(r"\bsales\s*generated\b", case=False, na=False)
+
+                def _event_count2(event_dates: pd.Series, c_in: pd.Series) -> pd.Series:
+                    if event_dates is None or event_dates.isna().all():
+                        return pd.Series(False, index=c_in.index)
+                    return event_dates.between(range_start, range_end)
+
+                c_in2 = _C2.between(range_start, range_end)
+                p_in2 = _P2.between(range_start, range_end)
+
+                deals_created2 = int(c_in2.sum())
+                enrolments2    = int((c_in2 & p_in2).sum()) if level == "MTD" else int(p_in2.sum())
+                referral_created2 = int((c_in2 & _is_referral_created2(_SRC2)).sum()) if _src_col2 else 0
+                sales_generated_intent2 = int((c_in2 & _is_sales_generated_intent2(_REFI2)).sum()) if (_ref_intent_col2 and _ref_intent_col2 in df_f.columns) else 0
+
+                f_in2 = _event_count2(_FDT2, c_in2)
+                r_in2 = _event_count2(_RDT2, c_in2)
+                d_in2 = _event_count2(_DDT2, c_in2)
+                first_cnt2 = int((f_in2 & c_in2).sum()) if level == "MTD" else int(f_in2.sum())
+                resch_cnt2 = int((r_in2 & c_in2).sum()) if level == "MTD" else int(r_in2.sum())
+                done_cnt2  = int((d_in2 & c_in2).sum()) if level == "MTD" else int(d_in2.sum())
+
+                st.markdown("#### Summary for Selected Range")
+                st.markdown(
+                    """
+                    <style>
+                      .kpi1-card {border:1px solid #e5e7eb; border-radius:14px; padding:12px 14px; background:#ffffff; margin-bottom:8px;}
+                      .kpi1-title {font-weight:700; font-size:0.95rem; margin-bottom:6px;}
+                      .kpi1-row {display:flex; justify-content:space-between; font-size:0.9rem; padding:2px 0;}
+                      .kpi1-key {color:#6b7280;}
+                      .kpi1-val {font-weight:700;}
+                    </style>
+                    """,
+                    unsafe_allow_html=True
+                )
+                _metric_order2 = [
+                    "Deals Created",
+                    "Enrolments",
+                    "Referral Created",
+                    "Sales Generated (Intent)",
+                    "First Cal Scheduled",
+                    "Cal Rescheduled",
+                    "Cal Done",
+                ]
+                _vals2 = {
+                    "Deals Created": deals_created2,
+                    "Enrolments": enrolments2,
+                    "Referral Created": referral_created2,
+                    "Sales Generated (Intent)": sales_generated_intent2,
+                    "First Cal Scheduled": first_cnt2,
+                    "Cal Rescheduled": resch_cnt2,
+                    "Cal Done": done_cnt2,
+                }
+                _box = [f'<div class="kpi1-card"><div class="kpi1-title">{range_start} → {range_end} ({level})</div>']
+                for k in _metric_order2:
+                    _box.append(f'<div class="kpi1-row"><div class="kpi1-key">{k}</div><div class="kpi1-val">{_vals2[k]:,}</div></div>')
+                _box.append("</div>")
+                st.markdown("".join(_box), unsafe_allow_html=True)
+            else:
+                st.info("Map Create/Payment columns to see the dynamic summary box.", icon="ℹ️")
+        except Exception as _dyn_err:
+            st.warning(f"Dynamic box could not render: {_dyn_err}", icon="⚠️")
 
         # ----------------------------
         # Metric picker (unchanged)
