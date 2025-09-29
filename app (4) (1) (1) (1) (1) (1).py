@@ -3236,6 +3236,11 @@ elif view == "Dashboard":
     _create = create_col if create_col in df_f.columns else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
     _pay    = pay_col    if pay_col    in df_f.columns else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
 
+    # Optional calibration columns (will be used in Day-wise Explorer if present)
+    _first_cal = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration Scheduled","Calibration First Scheduled"])
+    _resched   = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Calibration Rescheduled"])
+    _done      = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Calibration Done"])
+
     if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
         st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
     else:
@@ -3277,13 +3282,11 @@ elif view == "Dashboard":
             index=0,
             help=(
                 "Cohort: numerator = payments in window (Create can be any time); "
-                "denominator = deals created in window. "
-                "MTD: numerator = payments in window AND created in window; "
-                "denominator = deals created in window."
+                "MTD: numerator = payments in window AND created in window."
             )
         )
 
-        # ---- Normalize timestamps
+        # ---- Normalize timestamps (for KPI cards)
         c_ts = coerce_datetime(df_f[_create]).dt.date
         p_ts = coerce_datetime(df_f[_pay]).dt.date
 
@@ -3295,7 +3298,7 @@ elif view == "Dashboard":
         mask_created_in_win = between_date(c_ts, start_d, end_d)
         denom_created = int(mask_created_in_win.sum())
 
-        # Numerator logic
+        # Numerator logic for KPI cards
         if mode.startswith("MTD"):
             # Payments in window AND created in window
             num_mask = mask_created_in_win & between_date(p_ts, start_d, end_d)
@@ -3306,7 +3309,7 @@ elif view == "Dashboard":
         numerator_payments = int(num_mask.sum())
         conv_pct = (numerator_payments / denom_created * 100.0) if denom_created > 0 else np.nan
 
-        # ---- KPIs
+        # ---- KPIs (kept intact)
         st.markdown(
             """
             <style>
@@ -3343,7 +3346,7 @@ elif view == "Dashboard":
                 unsafe_allow_html=True,
             )
 
-        # ---- Optional detail tables
+        # ---- Optional detail tables (kept intact)
         with st.expander("Breakout by Deal Source"):
             src_col = source_col if source_col in df_f.columns else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
             if not src_col or src_col not in df_f.columns:
@@ -3397,17 +3400,24 @@ elif view == "Dashboard":
                 st.dataframe(outc, use_container_width=True)
 
         # =====================================================================
-        # Day-wise Explorer (ADDITIONAL) — Date on X; metric on Y; group optional
+        # Day-wise Explorer (ADDED) — multiple metrics + group + chart options
         # =====================================================================
         st.markdown("### Day-wise Explorer")
 
         # Controls
-        metric_name = st.selectbox(
-            "Metric",
-            ["Deals Created", "Enrolments (Payments)"],
-            index=1,
-            help="Choose what to count on Y-axis."
+        metric_options = ["Deals Created", "Enrolments (Payments)"]
+        # add calibration metrics only if we have their columns
+        if _first_cal: metric_options.append("First Calibration Scheduled")
+        if _resched:   metric_options.append("Calibration Rescheduled")
+        if _done:      metric_options.append("Calibration Done")
+
+        metrics_picked = st.multiselect(
+            "Metrics (select one or more)",
+            options=metric_options,
+            default=[m for m in metric_options[:2]],  # default first two
+            help="You can plot multiple metrics; each will render as its own chart and totals."
         )
+
         group_by = st.selectbox(
             "Group (optional)",
             ["(None)", "JetLearn Deal Source", "Country", "Referral Intent Source"],
@@ -3429,46 +3439,65 @@ elif view == "Dashboard":
         elif group_by == "Referral Intent Source":
             grp_col = find_col(df_f, ["Referral Intent Source","Referral intent source"])
 
-        # Build day-wise frame honoring mode + window
-        base = df_f.copy()
-        base["_cdate"] = c_ts
-        base["_pdate"] = p_ts
+        # Helpers to get the event-date series for a metric
+        def metric_date_series(df_in: pd.DataFrame, metric_name: str) -> pd.Series:
+            if metric_name == "Deals Created":
+                return coerce_datetime(df_in[_create]).dt.date
+            if metric_name == "Enrolments (Payments)":
+                return coerce_datetime(df_in[_pay]).dt.date
+            if metric_name == "First Calibration Scheduled" and _first_cal:
+                return coerce_datetime(df_in[_first_cal]).dt.date
+            if metric_name == "Calibration Rescheduled" and _resched:
+                return coerce_datetime(df_in[_resched]).dt.date
+            if metric_name == "Calibration Done" and _done:
+                return coerce_datetime(df_in[_done]).dt.date
+            # fallback: all NaT
+            return pd.Series(pd.NaT, index=df_in.index)
 
-        # pick the date column we count on
-        if metric_name.startswith("Deals"):
-            use_mask = between_date(base["_cdate"], start_d, end_d)
-            base = base.loc[use_mask].copy()
-            base["_day"] = base["_cdate"]
-        else:
-            # Enrolments per mode
+        # Build & render per-metric charts
+        for metric_name in metrics_picked:
+            # Base frame with Create/Pay already normalized
+            base = df_f.copy()
+            base["_cdate"] = c_ts
+            m_dates = metric_date_series(base, metric_name)
+            base["_mdate"] = m_dates
+
+            # Window masks per mode:
+            # - MTD: count rows where CreateDate in window AND metric-date in window
+            # - Cohort: count rows where metric-date in window (Create may be anywhere)
+            m_in = between_date(base["_mdate"], start_d, end_d)
             if mode.startswith("MTD"):
-                use_mask = between_date(base["_pdate"], start_d, end_d) & between_date(base["_cdate"], start_d, end_d)
+                use_mask = between_date(base["_cdate"], start_d, end_d) & m_in
             else:
-                use_mask = between_date(base["_pdate"], start_d, end_d)
-            base = base.loc[use_mask].copy()
-            base["_day"] = base["_pdate"]
+                use_mask = m_in
 
-        # Ready-to-aggregate
-        if grp_col and grp_col in base.columns:
-            base["_grp"] = base[grp_col].fillna("Unknown").astype(str).str.strip()
-            g = (
-                base.groupby(["_day","_grp"], dropna=False)
-                    .size().rename("Count").reset_index()
-                    .rename(columns={"_day":"Date","_grp":"Group"})
-                    .sort_values(["Date","Count"], ascending=[True,False])
-            )
-        else:
-            g = (
-                base.groupby(["_day"], dropna=False)
-                    .size().rename("Count").reset_index()
-                    .rename(columns={"_day":"Date"})
-                    .sort_values(["Date"], ascending=True)
-            )
+            df_metric = base.loc[use_mask].copy()
+            if df_metric.empty:
+                st.info(f"No rows in range for **{metric_name}**.")
+                continue
 
-        # Chart
-        if g.empty:
-            st.info("No rows in range for the chosen metric/mode.")
-        else:
+            # Day column
+            df_metric["_day"] = df_metric["_mdate"]
+
+            # Aggregate
+            if grp_col and grp_col in df_metric.columns:
+                df_metric["_grp"] = df_metric[grp_col].fillna("Unknown").astype(str).str.strip()
+                g = (
+                    df_metric.groupby(["_day","_grp"], dropna=False)
+                             .size().rename("Count").reset_index()
+                             .rename(columns={"_day":"Date","_grp":"Group"})
+                             .sort_values(["Date","Count"], ascending=[True,False])
+                )
+            else:
+                g = (
+                    df_metric.groupby(["_day"], dropna=False)
+                             .size().rename("Count").reset_index()
+                             .rename(columns={"_day":"Date"})
+                             .sort_values(["Date"], ascending=True)
+                )
+
+            # Chart for this metric
+            st.markdown(f"#### {metric_name}")
             g["Date"] = pd.to_datetime(g["Date"])
             if chart_type == "Line":
                 if "Group" in g.columns:
@@ -3547,14 +3576,12 @@ elif view == "Dashboard":
 
             st.altair_chart(ch, use_container_width=True)
 
-            # === Totals for current selection (ADDED) ===
-            st.markdown("#### Totals for current selection")
-
+            # === Totals for this metric (same section as before, but per metric) ===
+            st.markdown("##### Totals")
             total_cnt = int(g["Count"].sum())
             unique_days = g["Date"].dt.date.nunique() if "Date" in g.columns else 0
             avg_per_day = (total_cnt / unique_days) if unique_days > 0 else 0
 
-            # Quick KPI strip (overall total + avg)
             st.markdown(
                 f"""
                 <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0;">
@@ -3573,7 +3600,6 @@ elif view == "Dashboard":
                 unsafe_allow_html=True
             )
 
-            # Per-group totals (only when a grouping is applied)
             if "Group" in g.columns:
                 grp_tot = (
                     g.groupby("Group", dropna=False)["Count"]
@@ -3586,23 +3612,23 @@ elif view == "Dashboard":
                 )
                 st.dataframe(grp_tot, use_container_width=True)
                 st.download_button(
-                    "Download CSV — Group totals (current selection)",
+                    f"Download CSV — Group totals ({metric_name})",
                     data=grp_tot.to_csv(index=False).encode("utf-8"),
-                    file_name="dashboard_daywise_group_totals.csv",
+                    file_name=f"dashboard_daywise_group_totals_{metric_name.lower().replace(' ','_')}.csv",
                     mime="text/csv",
-                    key="dash_daywise_group_totals_dl",
+                    key=f"dash_daywise_group_totals_dl_{metric_name}",
                 )
 
-            # Raw day-wise table + download
-            with st.expander("Show / Download day-wise data"):
+            with st.expander(f"Show / Download day-wise data — {metric_name}"):
                 st.dataframe(g, use_container_width=True)
                 st.download_button(
-                    "Download CSV — Day-wise data",
+                    f"Download CSV — Day-wise data ({metric_name})",
                     data=g.to_csv(index=False).encode("utf-8"),
-                    file_name="dashboard_daywise_data.csv",
+                    file_name=f"dashboard_daywise_data_{metric_name.lower().replace(' ','_')}.csv",
                     mime="text/csv",
-                    key="dash_daywise_dl"
+                    key=f"dash_daywise_dl_{metric_name}"
                 )
+
 elif view == "Predictibility":
     import pandas as pd, numpy as np
     from datetime import date
