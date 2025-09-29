@@ -926,7 +926,7 @@ elif view == "Trend & Analysis":
         level = st.radio("Mode", ["MTD", "Cohort"], index=0, horizontal=True, key="ta_mode")
 
         # ================================
-        # 4-BOX KPI STRIP (ADDED ONLY)
+        # 4-BOX KPI STRIP (UPDATED AS PER NEW DEFINITIONS)
         # ================================
         try:
             _ref_intent_col = find_col(df, ["Referral Intent Source", "Referral intent source"])
@@ -941,7 +941,7 @@ elif view == "Trend & Analysis":
                 # Normalize (local names to avoid any collisions)
                 _C = coerce_datetime(df_f[create_col]).dt.date
                 _P = coerce_datetime(df_f[pay_col]).dt.date
-                _SRC  = (df_f[_src_col].fillna("Unknown").astype(str).str.strip().str.lower()) if _src_col else pd.Series("unknown", index=df_f.index)
+                _SRC  = (df_f[_src_col].fillna("Unknown").astype(str).str.strip()) if _src_col else pd.Series("Unknown", index=df_f.index)
                 _REFI = (df_f[_ref_intent_col].fillna("Unknown").astype(str).str.strip()) if (_ref_intent_col and _ref_intent_col in df_f.columns) else pd.Series("Unknown", index=df_f.index)
 
                 # Windows
@@ -955,28 +955,48 @@ elif view == "Trend & Analysis":
                     ("This month", tm_start, tm_end),
                 ]
 
-                # Counters (respect MTD/Cohort)
+                # Helpers for referral detection
+                def _is_referral_jls(sr: pd.Series) -> pd.Series:
+                    # JetLearn Deal Source contains 'referr'
+                    s = sr.fillna("").astype(str)
+                    return s.str.contains("referr", case=False, na=False)
+
+                def _is_self_generated_intent(sr: pd.Series) -> pd.Series:
+                    # Referral Intent Source contains 'self'
+                    s = sr.fillna("").astype(str)
+                    return s.str.contains("self", case=False, na=False)
+
+                # Counters:
+                # - Deals Created: by Create Date in window.
+                # - Enrolments: MTD = pay & create in window; Cohort = pay in window.
+                # - Referral (JLS): ALWAYS create-date based count where JLS has 'referr'.
+                # - Self-Generated (Intent): ALWAYS create-date based count where RIS has 'self'.
                 def _counts_for_window(start_d: date, end_d: date, mode: str) -> dict:
                     c_in = _C.between(start_d, end_d)
                     p_in = _P.between(start_d, end_d)
 
                     deals_created = int(c_in.sum())
-                    enrolments = int((c_in & p_in).sum()) if mode == "MTD" else int(p_in.sum())
+                    enrolments    = int((c_in & p_in).sum()) if mode == "MTD" else int(p_in.sum())
 
+                    # Referral (JLS) — generated -> create-date based only
                     if _src_col:
-                        is_ref_src = _SRC.str.contains(r"\breferral\b", case=False, na=False)
-                        referral_deals = int((c_in & is_ref_src).sum()) if mode == "MTD" else int((p_in & is_ref_src).sum())
+                        is_ref_src = _is_referral_jls(_SRC)
+                        referral_jls = int((c_in & is_ref_src).sum())
                     else:
-                        referral_deals = 0
+                        referral_jls = 0
 
-                    has_ref_intent = _REFI.str.len().gt(0) & (_REFI.str.lower() != "unknown")
-                    ref_sales = int((p_in & c_in & has_ref_intent).sum()) if mode == "MTD" else int((p_in & has_ref_intent).sum())
+                    # Self-Generated (Intent) — generated -> create-date based only
+                    if _ref_intent_col and _ref_intent_col in df_f.columns:
+                        is_self = _is_self_generated_intent(_REFI)
+                        self_gen = int((c_in & is_self).sum())
+                    else:
+                        self_gen = 0
 
                     return {
                         "Deals Created": deals_created,
                         "Enrolments": enrolments,
-                        "Referral (JLS)": referral_deals,
-                        "Referral Sales (Intent)": ref_sales,
+                        "Referral (JLS)": referral_jls,
+                        "Self-Generated (Intent)": self_gen,
                     }
 
                 kpis = [(label, _counts_for_window(s, e, level)) for (label, s, e) in windows]
@@ -998,7 +1018,7 @@ elif view == "Trend & Analysis":
                 _html = ['<div class="kpi4-grid">']
                 for label, vals in kpis:
                     _html.append(f'<div class="kpi4-card"><div class="kpi4-title">{label}</div>')
-                    for k in ["Deals Created","Enrolments","Referral (JLS)","Referral Sales (Intent)"]:
+                    for k in ["Deals Created","Enrolments","Referral (JLS)","Self-Generated (Intent)"]:
                         _html.append(f'<div class="kpi4-row"><div class="kpi4-key">{k}</div><div class="kpi4-val">{vals[k]:,}</div></div>')
                     _html.append("</div>")
                 _html.append("</div>")
@@ -1278,6 +1298,7 @@ elif view == "Trend & Analysis":
 
     # run the wrapped tab to avoid outer indentation issues
     _trend_and_analysis_tab()
+
 
 
 
