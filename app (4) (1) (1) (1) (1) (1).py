@@ -3926,16 +3926,13 @@ elif view == "Referrals":
         # ----------------------------
         # KPI Strip
         # ----------------------------
-        # Referral deals created
         ref_deals_created = int((c_in & is_referral_deal).sum())
 
-        # Referral enrollments (payments)
         if mode == "MTD":
             ref_enrolments = int((c_in & p_in & is_referral_deal).sum())
         else:  # Cohort
             ref_enrolments = int((p_in & is_referral_deal).sum())
 
-        # Total enrollments (same mode logic)
         if mode == "MTD":
             total_enrolments = int((c_in & p_in).sum())
         else:
@@ -3943,7 +3940,6 @@ elif view == "Referrals":
 
         pct_ref_of_total = (ref_enrolments / total_enrolments * 100.0) if total_enrolments > 0 else 0.0
 
-        # Top Referral Intent Source among payments in window (mode-wise)
         if mode == "MTD":
             base_refi_mask = (c_in & p_in & HAS_REFI)
         else:
@@ -4116,7 +4112,7 @@ elif view == "Referrals":
             .groupby(C_month).sum()
             .reindex(month_index, fill_value=0)
             .rename("ReferralDealsCreated")
-            .reset_index(names="Month")
+            .rename_axis("Month").reset_index()
         )
 
         # Enrolments counts (mode logic) for referral
@@ -4128,7 +4124,7 @@ elif view == "Referrals":
                 .groupby(P_month).sum()
                 .reindex(month_index, fill_value=0)
                 .rename("ReferralEnrolments")
-                .reset_index(names="Month")
+                .rename_axis("Month").reset_index()
             )
         else:
             enrol_m = (
@@ -4137,7 +4133,7 @@ elif view == "Referrals":
                 .groupby(P_month).sum()
                 .reindex(month_index, fill_value=0)
                 .rename("ReferralEnrolments")
-                .reset_index(names="Month")
+                .rename_axis("Month").reset_index()
             )
 
         # Total enrolments per month (same mode)
@@ -4149,7 +4145,7 @@ elif view == "Referrals":
                 .groupby(P_month).sum()
                 .reindex(month_index, fill_value=0)
                 .rename("TotalEnrolments")
-                .reset_index(names="Month")
+                .rename_axis("Month").reset_index()
             )
         else:
             total_enrol_m = (
@@ -4158,7 +4154,7 @@ elif view == "Referrals":
                 .groupby(P_month).sum()
                 .reindex(month_index, fill_value=0)
                 .rename("TotalEnrolments")
-                .reset_index(names="Month")
+                .rename_axis("Month").reset_index()
             )
 
         mom = created_m.merge(enrol_m, on="Month", how="left").merge(total_enrol_m, on="Month", how="left")
