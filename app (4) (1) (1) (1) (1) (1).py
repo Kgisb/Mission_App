@@ -926,7 +926,7 @@ elif view == "Trend & Analysis":
         level = st.radio("Mode", ["MTD", "Cohort"], index=0, horizontal=True, key="ta_mode")
 
         # ================================
-        # 4-BOX KPI STRIP (ADDED)
+        # 4-BOX KPI STRIP (ADDED & EXPANDED)
         # ================================
         try:
             _ref_intent_col = find_col(df, ["Referral Intent Source", "Referral intent source"])
@@ -935,14 +935,24 @@ elif view == "Trend & Analysis":
             _create_ok      = create_col and (create_col in df_f.columns)
             _pay_ok         = pay_col and (pay_col in df_f.columns)
 
+            # Optional calibration columns
+            _first_ok = first_cal_sched_col and (first_cal_sched_col in df_f.columns)
+            _resch_ok = cal_resched_col and (cal_resched_col in df_f.columns)
+            _done_ok  = cal_done_col and (cal_done_col in df_f.columns)
+
             if not (_create_ok and _pay_ok):
                 st.warning("Create/Payment columns are needed for the KPI strip. Please map them in the sidebar.", icon="⚠️")
             else:
-                # Normalize
+                # Normalize base fields
                 _C = coerce_datetime(df_f[create_col]).dt.date
                 _P = coerce_datetime(df_f[pay_col]).dt.date
                 _SRC  = (df_f[_src_col].fillna("Unknown").astype(str).str.strip()) if _src_col else pd.Series("Unknown", index=df_f.index)
                 _REFI = (df_f[_ref_intent_col].fillna("Unknown").astype(str).str.strip()) if (_ref_intent_col and _ref_intent_col in df_f.columns) else pd.Series("Unknown", index=df_f.index)
+
+                # Optional: calibration dates
+                _FDT = coerce_datetime(df_f[first_cal_sched_col]).dt.date if _first_ok else pd.Series(pd.NaT, index=df_f.index)
+                _RDT = coerce_datetime(df_f[cal_resched_col]).dt.date     if _resch_ok else pd.Series(pd.NaT, index=df_f.index)
+                _DDT = coerce_datetime(df_f[cal_done_col]).dt.date        if _done_ok else pd.Series(pd.NaT, index=df_f.index)
 
                 # Windows
                 tm_start, tm_end = month_bounds(today)
@@ -955,22 +965,25 @@ elif view == "Trend & Analysis":
                     ("This month", tm_start, tm_end),
                 ]
 
-                # Match helpers
-                def _is_referral_sales_generated_source(sr: pd.Series) -> pd.Series:
-                    # JetLearn Deal Source indicates referral (generated via referral source)
+                # Helpers
+                def _is_referral_created(sr: pd.Series) -> pd.Series:
                     s = sr.fillna("").astype(str)
                     return s.str.contains("referr", case=False, na=False)
 
                 def _is_sales_generated_intent(sr: pd.Series) -> pd.Series:
-                    # Referral Intent Source value is "Sales Generated" (case-insensitive, allow spacing variants)
                     s = sr.fillna("").astype(str)
                     return s.str.contains(r"\bsales\s*generated\b", case=False, na=False)
 
+                def _event_count_in_window(event_dates: pd.Series, c_in: pd.Series, start_d: date, end_d: date, mode: str) -> int:
+                    """Count events in [start_d, end_d]; MTD requires create-date also in window."""
+                    if event_dates is None or event_dates.isna().all():
+                        return 0
+                    e_in = event_dates.between(start_d, end_d)
+                    if mode == "MTD":
+                        return int((e_in & c_in).sum())
+                    return int(e_in.sum())
+
                 # Counters per window
-                # - Deals Created: create-date in window
-                # - Enrolments: MTD => pay & create in window; Cohort => pay in window
-                # - Referral (Sales Generated): ALWAYS create-date based, JLS indicates referral
-                # - Sales Generated (Intent): ALWAYS create-date based, RIS == "Sales Generated"
                 def _counts_for_window(start_d: date, end_d: date, mode: str) -> dict:
                     c_in = _C.between(start_d, end_d)
                     p_in = _P.between(start_d, end_d)
@@ -978,25 +991,31 @@ elif view == "Trend & Analysis":
                     deals_created = int(c_in.sum())
                     enrolments    = int((c_in & p_in).sum()) if mode == "MTD" else int(p_in.sum())
 
-                    # Referral (Sales Generated) — create-date based via Deal Source containing "referr"
+                    # Referral Created — create-date based
                     if _src_col:
-                        is_ref_src = _is_referral_sales_generated_source(_SRC)
-                        referral_sales_generated = int((c_in & is_ref_src).sum())
+                        referral_created = int((c_in & _is_referral_created(_SRC)).sum())
                     else:
-                        referral_sales_generated = 0
+                        referral_created = 0
 
-                    # Sales Generated (Intent) — create-date based via Referral Intent Source == "Sales Generated"
+                    # Sales Generated (Intent) — create-date based
                     if _ref_intent_col and _ref_intent_col in df_f.columns:
-                        is_sales_intent = _is_sales_generated_intent(_REFI)
-                        sales_generated_intent = int((c_in & is_sales_intent).sum())
+                        sales_generated_intent = int((c_in & _is_sales_generated_intent(_REFI)).sum())
                     else:
                         sales_generated_intent = 0
+
+                    # NEW: Calibration counts (respect MTD gating)
+                    first_cal_cnt = _event_count_in_window(_FDT, c_in, start_d, end_d, mode)
+                    resched_cnt   = _event_count_in_window(_RDT, c_in, start_d, end_d, mode)
+                    done_cnt      = _event_count_in_window(_DDT, c_in, start_d, end_d, mode)
 
                     return {
                         "Deals Created": deals_created,
                         "Enrolments": enrolments,
-                        "Referral (Sales Generated)": referral_sales_generated,
+                        "Referral Created": referral_created,
                         "Sales Generated (Intent)": sales_generated_intent,
+                        "First Cal Scheduled": first_cal_cnt,
+                        "Cal Rescheduled": resched_cnt,
+                        "Cal Done": done_cnt,
                     }
 
                 kpis = [(label, _counts_for_window(s, e, level)) for (label, s, e) in windows]
@@ -1015,11 +1034,20 @@ elif view == "Trend & Analysis":
                     """,
                     unsafe_allow_html=True
                 )
+                _metric_order = [
+                    "Deals Created",
+                    "Enrolments",
+                    "Referral Created",
+                    "Sales Generated (Intent)",
+                    "First Cal Scheduled",
+                    "Cal Rescheduled",
+                    "Cal Done",
+                ]
                 _html = ['<div class="kpi4-grid">']
                 for label, vals in kpis:
                     _html.append(f'<div class="kpi4-card"><div class="kpi4-title">{label}</div>')
-                    for k in ["Deals Created","Enrolments","Referral (Sales Generated)","Sales Generated (Intent)"]:
-                        _html.append(f'<div class="kpi4-row"><div class="kpi4-key">{k}</div><div class="kpi4-val">{vals[k]:,}</div></div>')
+                    for k in _metric_order:
+                        _html.append(f'<div class="kpi4-row"><div class="kpi4-key">{k}</div><div class="kpi4-val">{vals.get(k,0):,}</div></div>')
                     _html.append("</div>")
                 _html.append("</div>")
                 st.markdown("".join(_html), unsafe_allow_html=True)
