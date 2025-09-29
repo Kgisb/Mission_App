@@ -3396,180 +3396,210 @@ elif view == "Dashboard":
                 outc = outc.sort_values("Enrolments", ascending=False)
                 st.dataframe(outc, use_container_width=True)
 
-        # ===============================
-        # Day-wise Explorer (ADDITIONAL)
-        # ===============================
+        # =====================================================================
+        # Day-wise Explorer (ADDITIONAL) — Date on X; metric on Y; group optional
+        # =====================================================================
         st.markdown("### Day-wise Explorer")
 
-        # Resolve optional grouping columns
-        _src_col = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
-        _cty_col = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
-        _refi_col = find_col(df_f, ["Referral Intent Source","Referral intent source"])
-
-        metric_pick = st.selectbox(
+        # Controls
+        metric_name = st.selectbox(
             "Metric",
-            ["Deals Created (per day)", "Enrolments (per day)"],
-            index=0,
-            help="Deals use Create Date; Enrolments use Payment Received Date (MTD also requires Create in range)."
+            ["Deals Created", "Enrolments (Payments)"],
+            index=1,
+            help="Choose what to count on Y-axis."
         )
-
-        group_pick = st.selectbox(
+        group_by = st.selectbox(
             "Group (optional)",
-            ["None", "JetLearn Deal Source", "Country", "Referral Intent Source"],
+            ["(None)", "JetLearn Deal Source", "Country", "Referral Intent Source"],
             index=0,
-            help="Choose a dimension to split by (used for stacked or multi-series)."
+            help="Stack or breakout by a category (optional)."
         )
-
         chart_type = st.selectbox(
             "Chart type",
-            ["Line", "Bar", "Stacked Bars"],
+            ["Line", "Bars", "Stacked Bars"],
             index=0
         )
 
-        # Build base series (dates already normalized above)
-        date_index = pd.date_range(start_d, end_d, freq="D").date
-        if metric_pick.startswith("Deals"):
-            # Created per day
-            day_series = c_ts
-            in_window = mask_created_in_win  # already computed above
-            metric_name = "Deals Created"
-        else:
-            # Enrolments per day
-            day_series = p_ts
-            if mode.startswith("MTD"):
-                # use the numerator mask you already built (created & paid in window)
-                in_window = num_mask
-            else:
-                in_window = between_date(p_ts, start_d, end_d)
-            metric_name = "Enrolments"
-
-        df_day = df_f.loc[in_window].copy()
-        df_day["_day"] = day_series.loc[in_window]
-
-        # Pick grouping column (optional)
+        # Resolve grouping column
         grp_col = None
-        if group_pick == "JetLearn Deal Source" and _src_col and _src_col in df_day.columns:
-            grp_col = _src_col
-        elif group_pick == "Country" and _cty_col and _cty_col in df_day.columns:
-            grp_col = _cty_col
-        elif group_pick == "Referral Intent Source" and _refi_col and _refi_col in df_day.columns:
-            grp_col = _refi_col
+        if group_by == "JetLearn Deal Source":
+            grp_col = source_col if source_col in df_f.columns else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        elif group_by == "Country":
+            grp_col = country_col if country_col in df_f.columns else find_col(df_f, ["Country","Student Country","Deal Country"])
+        elif group_by == "Referral Intent Source":
+            grp_col = find_col(df_f, ["Referral Intent Source","Referral intent source"])
 
-        # Aggregate
-        if grp_col:
+        # Build day-wise frame honoring mode + window
+        base = df_f.copy()
+        base["_cdate"] = c_ts
+        base["_pdate"] = p_ts
+
+        # pick the date column we count on
+        if metric_name.startswith("Deals"):
+            use_mask = between_date(base["_cdate"], start_d, end_d)
+            base = base.loc[use_mask].copy()
+            base["_day"] = base["_cdate"]
+        else:
+            # Enrolments per mode
+            if mode.startswith("MTD"):
+                use_mask = between_date(base["_pdate"], start_d, end_d) & between_date(base["_cdate"], start_d, end_d)
+            else:
+                use_mask = between_date(base["_pdate"], start_d, end_d)
+            base = base.loc[use_mask].copy()
+            base["_day"] = base["_pdate"]
+
+        # Ready-to-aggregate
+        if grp_col and grp_col in base.columns:
+            base["_grp"] = base[grp_col].fillna("Unknown").astype(str).str.strip()
             g = (
-                df_day.assign(_ones=1)
-                      .groupby([pd.to_datetime(df_day["_day"]).dt.date, grp_col], dropna=False)["_ones"]
-                      .sum()
-                      .rename("Count")
-                      .reset_index()
-                      .rename(columns={grp_col: "Group", "_day": "Date"})
+                base.groupby(["_day","_grp"], dropna=False)
+                    .size().rename("Count").reset_index()
+                    .rename(columns={"_day":"Date","_grp":"Group"})
+                    .sort_values(["Date","Count"], ascending=[True,False])
             )
         else:
             g = (
-                df_day.assign(_ones=1)
-                      .groupby(pd.to_datetime(df_day["_day"]).dt.date, dropna=False)["_ones"]
-                      .sum()
-                      .rename("Count")
-                      .reset_index()
-                      .rename(columns={"_day": "Date"})
+                base.groupby(["_day"], dropna=False)
+                    .size().rename("Count").reset_index()
+                    .rename(columns={"_day":"Date"})
+                    .sort_values(["Date"], ascending=True)
             )
-            # ensure full date spine
-            g = pd.DataFrame({"Date": date_index}).merge(g, on="Date", how="left").fillna({"Count": 0})
 
         # Chart
         if g.empty:
-            st.info("No rows for the chosen settings.")
+            st.info("No rows in range for the chosen metric/mode.")
         else:
-            # Order dates
             g["Date"] = pd.to_datetime(g["Date"])
-            g = g.sort_values("Date")
-            date_order = g["Date"].dt.strftime("%Y-%m-%d").unique().tolist()
-            g["_DateStr"] = g["Date"].dt.strftime("%Y-%m-%d")
-
-            if grp_col:
-                # Multi-series charts
-                if chart_type == "Line":
+            if chart_type == "Line":
+                if "Group" in g.columns:
                     ch = (
                         alt.Chart(g)
                         .mark_line(point=True)
                         .encode(
-                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            x=alt.X("Date:T", title="Date"),
                             y=alt.Y("Count:Q", title=metric_name),
-                            color=alt.Color("Group:N", title=group_pick),
-                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
-                                     alt.Tooltip("Group:N", title=group_pick),
-                                     alt.Tooltip("Count:Q", title=metric_name)]
+                            color=alt.Color("Group:N", title="Group"),
+                            tooltip=["Date:T","Group:N","Count:Q"]
                         )
-                        .properties(height=360, title=f"{metric_name} — day-wise by {group_pick} ({mode})")
+                        .properties(height=360, title=f"{metric_name} — Day-wise")
                     )
-                elif chart_type == "Bar":
-                    ch = (
-                        alt.Chart(g)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
-                            y=alt.Y("Count:Q", title=metric_name),
-                            color=alt.Color("Group:N", title=group_pick),
-                            xOffset=alt.XOffset("Group:N"),
-                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
-                                     alt.Tooltip("Group:N", title=group_pick),
-                                     alt.Tooltip("Count:Q", title=metric_name)]
-                        )
-                        .properties(height=360, title=f"{metric_name} — grouped bars by {group_pick} ({mode})")
-                    )
-                else:  # Stacked Bars
-                    ch = (
-                        alt.Chart(g)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
-                            y=alt.Y("Count:Q", title=metric_name, stack="zero"),
-                            color=alt.Color("Group:N", title=group_pick),
-                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
-                                     alt.Tooltip("Group:N", title=group_pick),
-                                     alt.Tooltip("Count:Q", title=metric_name)]
-                        )
-                        .properties(height=360, title=f"{metric_name} — stacked by {group_pick} ({mode})")
-                    )
-            else:
-                # Single-series charts
-                if chart_type == "Line":
+                else:
                     ch = (
                         alt.Chart(g)
                         .mark_line(point=True)
                         .encode(
-                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            x=alt.X("Date:T", title="Date"),
                             y=alt.Y("Count:Q", title=metric_name),
-                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
-                                     alt.Tooltip("Count:Q", title=metric_name)]
+                            tooltip=["Date:T","Count:Q"]
                         )
-                        .properties(height=360, title=f"{metric_name} — day-wise ({mode})")
+                        .properties(height=360, title=f"{metric_name} — Day-wise")
                     )
-                else:  # Bar or Stacked both reduce to simple bars without a group
+            elif chart_type == "Bars":
+                if "Group" in g.columns:
                     ch = (
                         alt.Chart(g)
                         .mark_bar()
                         .encode(
-                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            x=alt.X("Date:T", title="Date"),
                             y=alt.Y("Count:Q", title=metric_name),
-                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
-                                     alt.Tooltip("Count:Q", title=metric_name)]
+                            color=alt.Color("Group:N", title="Group"),
+                            column=alt.Column("Group:N", title=""),
+                            tooltip=["Date:T","Group:N","Count:Q"]
                         )
-                        .properties(height=360, title=f"{metric_name} — day-wise ({mode})")
+                        .properties(height=280, title=f"{metric_name} — Day-wise (bars)")
+                    )
+                else:
+                    ch = (
+                        alt.Chart(g)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Date:T", title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name),
+                            tooltip=["Date:T","Count:Q"]
+                        )
+                        .properties(height=360, title=f"{metric_name} — Day-wise (bars)")
+                    )
+            else:  # Stacked Bars
+                if "Group" not in g.columns:
+                    st.info("Pick a Group to enable stacked bars.")
+                    ch = (
+                        alt.Chart(g)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Date:T", title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name),
+                            tooltip=["Date:T","Count:Q"]
+                        )
+                        .properties(height=360, title=f"{metric_name} — Day-wise")
+                    )
+                else:
+                    ch = (
+                        alt.Chart(g)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Date:T", title="Date"),
+                            y=alt.Y("sum(Count):Q", title=metric_name),
+                            color=alt.Color("Group:N", title="Group"),
+                            tooltip=["Date:T","Group:N","Count:Q"]
+                        )
+                        .properties(height=360, title=f"{metric_name} — Day-wise (stacked)")
                     )
 
             st.altair_chart(ch, use_container_width=True)
 
-            with st.expander("Show / Download day-wise data"):
-                show_cols = ["Date", "Count"] + (["Group"] if "Group" in g.columns else [])
-                out_tbl = g[show_cols].copy()
-                out_tbl["Date"] = out_tbl["Date"].dt.date
-                st.dataframe(out_tbl, use_container_width=True)
+            # === Totals for current selection (ADDED) ===
+            st.markdown("#### Totals for current selection")
+
+            total_cnt = int(g["Count"].sum())
+            unique_days = g["Date"].dt.date.nunique() if "Date" in g.columns else 0
+            avg_per_day = (total_cnt / unique_days) if unique_days > 0 else 0
+
+            # Quick KPI strip (overall total + avg)
+            st.markdown(
+                f"""
+                <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0;">
+                  <div class='kpi-card'>
+                    <div class='kpi-title'>Total {metric_name}</div>
+                    <div class='kpi-value'>{total_cnt:,}</div>
+                    <div class='kpi-sub'>{start_d} → {end_d} • Mode: {mode}</div>
+                  </div>
+                  <div class='kpi-card'>
+                    <div class='kpi-title'>Avg per day</div>
+                    <div class='kpi-value'>{avg_per_day:.2f}</div>
+                    <div class='kpi-sub'>{unique_days} day(s) in range</div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            # Per-group totals (only when a grouping is applied)
+            if "Group" in g.columns:
+                grp_tot = (
+                    g.groupby("Group", dropna=False)["Count"]
+                     .sum()
+                     .reset_index()
+                     .sort_values("Count", ascending=False)
+                )
+                grp_tot["Share %"] = np.where(
+                    total_cnt > 0, grp_tot["Count"] / total_cnt * 100.0, 0.0
+                )
+                st.dataframe(grp_tot, use_container_width=True)
                 st.download_button(
-                    "Download CSV — Day-wise",
-                    data=out_tbl.to_csv(index=False).encode("utf-8"),
-                    file_name="dashboard_daywise.csv",
+                    "Download CSV — Group totals (current selection)",
+                    data=grp_tot.to_csv(index=False).encode("utf-8"),
+                    file_name="dashboard_daywise_group_totals.csv",
                     mime="text/csv",
-                    key="dash_daywise_dl",
+                    key="dash_daywise_group_totals_dl",
+                )
+
+            # Raw day-wise table + download
+            with st.expander("Show / Download day-wise data"):
+                st.dataframe(g, use_container_width=True)
+                st.download_button(
+                    "Download CSV — Day-wise data",
+                    data=g.to_csv(index=False).encode("utf-8"),
+                    file_name="dashboard_daywise_data.csv",
+                    mime="text/csv",
+                    key="dash_daywise_dl"
                 )
