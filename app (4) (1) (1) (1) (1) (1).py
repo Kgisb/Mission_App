@@ -926,7 +926,7 @@ elif view == "Trend & Analysis":
         level = st.radio("Mode", ["MTD", "Cohort"], index=0, horizontal=True, key="ta_mode")
 
         # ================================
-        # 4-BOX KPI STRIP (UPDATED AS PER NEW DEFINITIONS)
+        # 4-BOX KPI STRIP (ADDED)
         # ================================
         try:
             _ref_intent_col = find_col(df, ["Referral Intent Source", "Referral intent source"])
@@ -938,7 +938,7 @@ elif view == "Trend & Analysis":
             if not (_create_ok and _pay_ok):
                 st.warning("Create/Payment columns are needed for the KPI strip. Please map them in the sidebar.", icon="⚠️")
             else:
-                # Normalize (local names to avoid any collisions)
+                # Normalize
                 _C = coerce_datetime(df_f[create_col]).dt.date
                 _P = coerce_datetime(df_f[pay_col]).dt.date
                 _SRC  = (df_f[_src_col].fillna("Unknown").astype(str).str.strip()) if _src_col else pd.Series("Unknown", index=df_f.index)
@@ -955,22 +955,22 @@ elif view == "Trend & Analysis":
                     ("This month", tm_start, tm_end),
                 ]
 
-                # Helpers for referral detection
-                def _is_referral_jls(sr: pd.Series) -> pd.Series:
-                    # JetLearn Deal Source contains 'referr'
+                # Match helpers
+                def _is_referral_sales_generated_source(sr: pd.Series) -> pd.Series:
+                    # JetLearn Deal Source indicates referral (generated via referral source)
                     s = sr.fillna("").astype(str)
                     return s.str.contains("referr", case=False, na=False)
 
-                def _is_self_generated_intent(sr: pd.Series) -> pd.Series:
-                    # Referral Intent Source contains 'self'
+                def _is_sales_generated_intent(sr: pd.Series) -> pd.Series:
+                    # Referral Intent Source value is "Sales Generated" (case-insensitive, allow spacing variants)
                     s = sr.fillna("").astype(str)
-                    return s.str.contains("self", case=False, na=False)
+                    return s.str.contains(r"\bsales\s*generated\b", case=False, na=False)
 
-                # Counters:
-                # - Deals Created: by Create Date in window.
-                # - Enrolments: MTD = pay & create in window; Cohort = pay in window.
-                # - Referral (JLS): ALWAYS create-date based count where JLS has 'referr'.
-                # - Self-Generated (Intent): ALWAYS create-date based count where RIS has 'self'.
+                # Counters per window
+                # - Deals Created: create-date in window
+                # - Enrolments: MTD => pay & create in window; Cohort => pay in window
+                # - Referral (Sales Generated): ALWAYS create-date based, JLS indicates referral
+                # - Sales Generated (Intent): ALWAYS create-date based, RIS == "Sales Generated"
                 def _counts_for_window(start_d: date, end_d: date, mode: str) -> dict:
                     c_in = _C.between(start_d, end_d)
                     p_in = _P.between(start_d, end_d)
@@ -978,25 +978,25 @@ elif view == "Trend & Analysis":
                     deals_created = int(c_in.sum())
                     enrolments    = int((c_in & p_in).sum()) if mode == "MTD" else int(p_in.sum())
 
-                    # Referral (JLS) — generated -> create-date based only
+                    # Referral (Sales Generated) — create-date based via Deal Source containing "referr"
                     if _src_col:
-                        is_ref_src = _is_referral_jls(_SRC)
-                        referral_jls = int((c_in & is_ref_src).sum())
+                        is_ref_src = _is_referral_sales_generated_source(_SRC)
+                        referral_sales_generated = int((c_in & is_ref_src).sum())
                     else:
-                        referral_jls = 0
+                        referral_sales_generated = 0
 
-                    # Self-Generated (Intent) — generated -> create-date based only
+                    # Sales Generated (Intent) — create-date based via Referral Intent Source == "Sales Generated"
                     if _ref_intent_col and _ref_intent_col in df_f.columns:
-                        is_self = _is_self_generated_intent(_REFI)
-                        self_gen = int((c_in & is_self).sum())
+                        is_sales_intent = _is_sales_generated_intent(_REFI)
+                        sales_generated_intent = int((c_in & is_sales_intent).sum())
                     else:
-                        self_gen = 0
+                        sales_generated_intent = 0
 
                     return {
                         "Deals Created": deals_created,
                         "Enrolments": enrolments,
-                        "Referral (JLS)": referral_jls,
-                        "Self-Generated (Intent)": self_gen,
+                        "Referral (Sales Generated)": referral_sales_generated,
+                        "Sales Generated (Intent)": sales_generated_intent,
                     }
 
                 kpis = [(label, _counts_for_window(s, e, level)) for (label, s, e) in windows]
@@ -1018,7 +1018,7 @@ elif view == "Trend & Analysis":
                 _html = ['<div class="kpi4-grid">']
                 for label, vals in kpis:
                     _html.append(f'<div class="kpi4-card"><div class="kpi4-title">{label}</div>')
-                    for k in ["Deals Created","Enrolments","Referral (JLS)","Self-Generated (Intent)"]:
+                    for k in ["Deals Created","Enrolments","Referral (Sales Generated)","Sales Generated (Intent)"]:
                         _html.append(f'<div class="kpi4-row"><div class="kpi4-key">{k}</div><div class="kpi4-val">{vals[k]:,}</div></div>')
                     _html.append("</div>")
                 _html.append("</div>")
@@ -1298,6 +1298,7 @@ elif view == "Trend & Analysis":
 
     # run the wrapped tab to avoid outer indentation issues
     _trend_and_analysis_tab()
+
 
 
 
