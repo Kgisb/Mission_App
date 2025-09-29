@@ -3862,6 +3862,9 @@ elif view == "Predictibility":
 # =========================
 # Referrals Tab (full)
 # =========================
+# ---- Hook it into your main view switch ----
+elif view == "Referrals":
+    _referrals_tab()
 def _referrals_tab():
     st.subheader("Referrals — Holistic View")
 
@@ -4269,6 +4272,4 @@ def _referrals_tab():
         else:
             st.info("No referral enrolments found in the selected MoM window to split by ‘Sibling Deal’.")
 
-# ---- Hook it into your main view switch ----
-elif view == "Referrals":
-    _referrals_tab()
+
