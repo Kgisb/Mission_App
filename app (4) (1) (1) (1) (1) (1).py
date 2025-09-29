@@ -3862,414 +3862,390 @@ elif view == "Predictibility":
 # =========================
 # Referrals Tab (full)
 # =========================
-# ---- Hook it into your main view switch ----
 elif view == "Referrals":
-    _referrals_tab()
-def _referrals_tab():
-    st.subheader("Referrals — Holistic View")
+    def _referrals_tab():
+        st.subheader("Referrals — Holistic View")
 
-    # ---------- Resolve columns ----------
-    _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
-    _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
-    _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
-    _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
+        # ---------- Resolve columns ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+        _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
+        _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
 
-    if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
-        st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
-        return
-    if not _src or _src not in df_f.columns:
-        st.warning("Deal Source column is missing (e.g., 'JetLearn Deal Source'). Referrals view needs it.", icon="⚠️")
-        return
-
-    # ---------- Controls ----------
-    col_top1, col_top2, col_top3 = st.columns([1.2, 1.2, 1])
-    with col_top1:
-        mode = st.radio(
-            "Mode",
-            ["MTD", "Cohort"],
-            index=1,
-            horizontal=True,
-            key="ref_mode",
-            help=("MTD: enrolments counted only if the deal was also created in the same window. "
-                  "Cohort: enrolments count by payment date regardless of create month.")
-        )
-    with col_top2:
-        scope = st.radio(
-            "Date scope",
-            ["This month", "Last month", "Custom"],
-            index=0,
-            horizontal=True,
-            key="ref_dscope"
-        )
-    with col_top3:
-        # Month-on-month horizon (affects MoM charts)
-        mom_trailing = st.selectbox("MoM trailing (months)", [3, 6, 12], index=1, key="ref_momh")
-
-    today_d = date.today()
-    if scope == "This month":
-        range_start, range_end = month_bounds(today_d)
-    elif scope == "Last month":
-        range_start, range_end = last_month_bounds(today_d)
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            range_start = st.date_input("Start date", value=today_d.replace(day=1), key="ref_start")
-        with c2:
-            range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="ref_end")
-        if range_end < range_start:
-            st.error("End date cannot be before start date.")
+        if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
+            st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
             return
-    st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
+        if not _src or _src not in df_f.columns:
+            st.warning("Deal Source column is missing (e.g., 'JetLearn Deal Source'). Referrals view needs it.", icon="⚠️")
+            return
 
-    # ---------- Normalize base series ----------
-    C = coerce_datetime(df_f[_create]).dt.date
-    P = coerce_datetime(df_f[_pay]).dt.date
-    SRC = df_f[_src].fillna("Unknown").astype(str)
-
-    # "Referral" deals by deal source (contains 'referr')
-    is_referral_deal = SRC.str.contains("referr", case=False, na=False)
-
-    # Referral Intent Source (for Sales Generated)
-    if _ris and _ris in df_f.columns:
-        RIS = df_f[_ris].fillna("Unknown").astype(str).str.strip()
-        has_sales_generated = RIS.str.len().gt(0) & (RIS.str.lower() != "unknown")
-    else:
-        RIS = pd.Series("Unknown", index=df_f.index)
-        has_sales_generated = pd.Series(False, index=df_f.index)
-
-    # ---------- Window masks ----------
-    def between_date(s, a, b):
-        return s.notna() & (s >= a) & (s <= b)
-
-    mask_created_in_win = between_date(C, range_start, range_end)
-    mask_paid_in_win    = between_date(P, range_start, range_end)
-
-    # Enrolment mask per Mode (for *referral* enrolments)
-    if mode == "MTD":
-        # Created-in-window AND paid-in-window AND referral
-        enrol_ref_mask = mask_created_in_win & mask_paid_in_win & is_referral_deal
-        # Also used later for RIS sales generated in MTD
-        sales_gen_mask = enrol_ref_mask & has_sales_generated
-    else:
-        # Cohort: paid-in-window AND referral (create can be anywhere)
-        enrol_ref_mask = mask_paid_in_win & is_referral_deal
-        sales_gen_mask = enrol_ref_mask & has_sales_generated
-
-    # ---------- KPI strip ----------
-    k1, k2, k3, k4 = st.columns(4)
-    # Referral Created (by Create Date in window)
-    referral_created_cnt = int((mask_created_in_win & is_referral_deal).sum())
-    # Enrolments (referral per Mode)
-    referral_enrol_cnt   = int(enrol_ref_mask.sum())
-    # Referral (Sales Generated) — payments with a known RIS per Mode
-    referral_sales_gen   = int(sales_gen_mask.sum())
-    # % of total conversions that are referral
-    total_enrol_cnt      = int(mask_paid_in_win.sum()) if mode == "Cohort" else int((mask_paid_in_win & mask_created_in_win).sum())
-    pct_ref_of_total     = (referral_enrol_cnt / total_enrol_cnt * 100.0) if total_enrol_cnt > 0 else np.nan
-
-    st.markdown(
-        """
-        <style>
-          .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
-          .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
-          .kpi-value { font-size: 1.4rem; font-weight: 700; }
-          .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    with k1:
-        st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>Referral Created</div>"
-            f"<div class='kpi-value'>{referral_created_cnt:,}</div>"
-            f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
-            unsafe_allow_html=True
-        )
-    with k2:
-        st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>Referral Enrolments</div>"
-            f"<div class='kpi-value'>{referral_enrol_cnt:,}</div>"
-            f"<div class='kpi-sub'>Mode: {mode}</div></div>",
-            unsafe_allow_html=True
-        )
-    with k3:
-        st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>Sales Generated (RIS)</div>"
-            f"<div class='kpi-value'>{referral_sales_gen:,}</div>"
-            f"<div class='kpi-sub'>Known Referral Intent Source</div></div>",
-            unsafe_allow_html=True
-        )
-    with k4:
-        pct_txt = "–" if np.isnan(pct_ref_of_total) else f"{pct_ref_of_total:.1f}%"
-        st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>% of Total Conversions</div>"
-            f"<div class='kpi-value'>{pct_txt}</div>"
-            f"<div class='kpi-sub'>Referral enrolments / All enrolments</div></div>",
-            unsafe_allow_html=True
-        )
-
-    st.markdown("---")
-
-    # ---------- Day-wise Trends (Created & Enrolments) ----------
-    st.markdown("### Day-wise Trends (in selected window)")
-    chart_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="ref_viewmode")
-
-    # Day series for referral-created
-    day_df_created = pd.DataFrame({
-        "Date": C[mask_created_in_win & is_referral_deal]
-    })
-    if not day_df_created.empty:
-        day_created = (day_df_created
-                       .groupby("Date").size()
-                       .rename("Referral Created")
-                       .reset_index())
-    else:
-        day_created = pd.DataFrame(columns=["Date","Referral Created"])
-
-    # Day series for referral-enrolments per mode
-    day_df_enrol = pd.DataFrame({
-        "Date": P[enrol_ref_mask]
-    })
-    if not day_df_enrol.empty:
-        day_enrol = (day_df_enrol
-                     .groupby("Date").size()
-                     .rename("Referral Enrolments")
-                     .reset_index())
-    else:
-        day_enrol = pd.DataFrame(columns=["Date","Referral Enrolments"])
-
-    day_join = pd.merge(day_created, day_enrol, on="Date", how="outer").fillna(0)
-    if chart_mode == "Graph" and not day_join.empty:
-        melt_day = day_join.melt(id_vars=["Date"], value_vars=["Referral Created","Referral Enrolments"],
-                                 var_name="Metric", value_name="Count")
-        ch_day = (
-            alt.Chart(melt_day)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("Date:T", title="Date"),
-                y=alt.Y("Count:Q", title="Count"),
-                color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
-                tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q")]
+        # ---------- Controls ----------
+        col_top1, col_top2, col_top3 = st.columns([1.2, 1.2, 1])
+        with col_top1:
+            mode = st.radio(
+                "Mode",
+                ["MTD", "Cohort"],
+                index=1,
+                horizontal=True,
+                key="ref_mode",
+                help=("MTD: enrolments counted only if the deal was also created in the same window. "
+                      "Cohort: enrolments count by payment date regardless of create month.")
             )
-            .properties(height=320, title="Day-wise Referral Created vs Enrolments")
-        )
-        st.altair_chart(ch_day, use_container_width=True)
-    else:
-        st.dataframe(day_join.sort_values("Date"), use_container_width=True)
-        st.download_button(
-            "Download CSV — Day-wise Referral Created & Enrolments",
-            day_join.sort_values("Date").to_csv(index=False).encode("utf-8"),
-            "referrals_daywise.csv",
-            "text/csv",
-            key="ref_dl_day"
-        )
+        with col_top2:
+            scope = st.radio(
+                "Date scope",
+                ["This month", "Last month", "Custom"],
+                index=0,
+                horizontal=True,
+                key="ref_dscope"
+            )
+        with col_top3:
+            mom_trailing = st.selectbox("MoM trailing (months)", [3, 6, 12], index=1, key="ref_momh")
 
-    st.markdown("---")
-
-    # ---------- Referral Intent Source split (in-range) ----------
-    st.markdown("### Referral Intent Source — Split (on Referral Enrolments)")
-    if _ris and _ris in df_f.columns:
-        ris_now = RIS[enrol_ref_mask]
-        if ris_now.any():
-            ris_tbl = (ris_now.value_counts(dropna=False)
-                              .rename_axis("Referral Intent Source")
-                              .rename("Count")
-                              .reset_index())
-            ris_tbl = ris_tbl.sort_values("Count", ascending=False)
-            view2 = st.radio("View as", ["Graph", "Table"], horizontal=True, key="ref_viewmode_ris")
-            if view2 == "Graph" and not ris_tbl.empty:
-                ch_ris = (
-                    alt.Chart(ris_tbl)
-                    .mark_bar(opacity=0.9)
-                    .encode(
-                        x=alt.X("Referral Intent Source:N", sort=ris_tbl["Referral Intent Source"].tolist()),
-                        y=alt.Y("Count:Q"),
-                        tooltip=[alt.Tooltip("Referral Intent Source:N"), alt.Tooltip("Count:Q")]
-                    )
-                    .properties(height=360, title="Referral Intent Source split (Enrolments)")
-                )
-                st.altair_chart(ch_ris, use_container_width=True)
-            else:
-                st.dataframe(ris_tbl, use_container_width=True)
-                st.download_button(
-                    "Download CSV — RIS split (Enrolments)",
-                    ris_tbl.to_csv(index=False).encode("utf-8"),
-                    "referrals_ris_split.csv",
-                    "text/csv",
-                    key="ref_dl_ris"
-                )
+        today_d = date.today()
+        if scope == "This month":
+            range_start, range_end = month_bounds(today_d)
+        elif scope == "Last month":
+            range_start, range_end = last_month_bounds(today_d)
         else:
-            st.info("No referral enrolments in range to split by Referral Intent Source.")
-    else:
-        st.info("Referral Intent Source column not found.")
+            c1, c2 = st.columns(2)
+            with c1:
+                range_start = st.date_input("Start date", value=today_d.replace(day=1), key="ref_start")
+            with c2:
+                range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="ref_end")
+            if range_end < range_start:
+                st.error("End date cannot be before start date.")
+                return
+        st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
 
-    st.markdown("---")
+        # ---------- Normalize base series ----------
+        C = coerce_datetime(df_f[_create]).dt.date
+        P = coerce_datetime(df_f[_pay]).dt.date
+        SRC = df_f[_src].fillna("Unknown").astype(str)
 
-    # ---------- Month-on-Month (Created & Enrolments) ----------
-    st.markdown("### Month-on-Month Progress")
-    # Build month Periods over trailing window ending at range_end's month
-    end_month = pd.Period(range_end.replace(day=1), freq="M")
-    months = pd.period_range(end=end_month, periods=mom_trailing, freq="M")
-    months_list = months.astype(str).tolist()
+        # Referral deals by deal source (contains 'referr')
+        is_referral_deal = SRC.str.contains("referr", case=False, na=False)
 
-    C_month = coerce_datetime(df_f[_create]).dt.to_period("M")
-    P_month = coerce_datetime(df_f[_pay]).dt.to_period("M")
+        # Referral Intent Source (Sales Generated presence)
+        if _ris and _ris in df_f.columns:
+            RIS = df_f[_ris].fillna("Unknown").astype(str).str.strip()
+            has_sales_generated = RIS.str.len().gt(0) & (RIS.str.lower() != "unknown")
+        else:
+            RIS = pd.Series("Unknown", index=df_f.index)
+            has_sales_generated = pd.Series(False, index=df_f.index)
 
-    # Created (referral) MoM
-    mom_created = (
-        pd.Series(1, index=df_f.index)
-        .where(is_referral_deal & C_month.isin(months), other=np.nan)
-        .groupby(C_month).count()
-        .reindex(months, fill_value=0)
-        .rename("Referral Created")
-        .rename_axis("_month").reset_index()
-    )
-    mom_created["Month"] = mom_created["_month"].astype(str)
-    mom_created = mom_created[["Month","Referral Created"]]
+        # ---------- Window masks ----------
+        def between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
 
-    # Enrolments (referral) MoM per mode
-    if mode == "MTD":
-        mtd_mask_mom = is_referral_deal & P_month.isin(months) & C_month.isin(months) & (P_month == C_month)
-        grp = pd.Series(1, index=df_f.index).where(mtd_mask_mom, other=np.nan).groupby(P_month).count()
-    else:
-        cohort_mask_mom = is_referral_deal & P_month.isin(months)
-        grp = pd.Series(1, index=df_f.index).where(cohort_mask_mom, other=np.nan).groupby(P_month).count()
+        mask_created_in_win = between_date(C, range_start, range_end)
+        mask_paid_in_win    = between_date(P, range_start, range_end)
 
-    mom_enrol = grp.reindex(months, fill_value=0).rename("Referral Enrolments").rename_axis("_month").reset_index()
-    mom_enrol["Month"] = mom_enrol["_month"].astype(str)
-    mom_enrol = mom_enrol[["Month","Referral Enrolments"]]
-
-    mom = mom_created.merge(mom_enrol, on="Month", how="outer").fillna(0)
-
-    choice_mom = st.radio("MoM view as", ["Graph", "Table"], horizontal=True, key="ref_viewmode_mom")
-
-    if choice_mom == "Graph" and not mom.empty:
-        melt_mom = mom.melt(id_vars=["Month"], value_vars=["Referral Created","Referral Enrolments"],
-                            var_name="Metric", value_name="Count")
-        ch_mom = (
-            alt.Chart(melt_mom)
-            .mark_bar(opacity=0.9)
-            .encode(
-                x=alt.X("Month:N", sort=months_list),
-                y=alt.Y("Count:Q"),
-                color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
-                tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q")]
-            )
-            .properties(height=360, title=f"MoM — Referral Created & Enrolments • Mode: {mode}")
-        )
-        st.altair_chart(ch_mom, use_container_width=True)
-    else:
-        st.dataframe(mom.sort_values("Month"), use_container_width=True)
-        st.download_button(
-            "Download CSV — MoM Created & Enrolments",
-            mom.sort_values("Month").to_csv(index=False).encode("utf-8"),
-            "referrals_mom_created_enrol.csv",
-            "text/csv",
-            key="ref_dl_mom"
-        )
-
-    # ---------- MoM split by Referral Intent Source (enrolments) ----------
-    st.markdown("#### MoM — Referral Intent Source split (on Enrolments)")
-    if _ris and _ris in df_f.columns:
         if mode == "MTD":
-            ris_mask_mom = is_referral_deal & P_month.isin(months) & C_month.isin(months) & (C_month == P_month) & has_sales_generated
+            enrol_ref_mask = mask_created_in_win & mask_paid_in_win & is_referral_deal
+            sales_gen_mask = enrol_ref_mask & has_sales_generated
         else:
-            ris_mask_mom = is_referral_deal & P_month.isin(months) & has_sales_generated
+            enrol_ref_mask = mask_paid_in_win & is_referral_deal
+            sales_gen_mask = enrol_ref_mask & has_sales_generated
 
-        if ris_mask_mom.any():
-            ris_mom = pd.DataFrame({
-                "Month": P_month[ris_mask_mom].astype(str),
-                "Referral Intent Source": RIS[ris_mask_mom],
-            })
-            ris_mom = (ris_mom.groupby(["Month","Referral Intent Source"])
-                              .size().rename("Count").reset_index())
-            ch_ris_mom = (
-                alt.Chart(ris_mom)
+        # ---------- KPI strip ----------
+        k1, k2, k3, k4 = st.columns(4)
+        referral_created_cnt = int((mask_created_in_win & is_referral_deal).sum())
+        referral_enrol_cnt   = int(enrol_ref_mask.sum())
+        referral_sales_gen   = int(sales_gen_mask.sum())
+        total_enrol_cnt      = int(mask_paid_in_win.sum()) if mode == "Cohort" else int((mask_paid_in_win & mask_created_in_win).sum())
+        pct_ref_of_total     = (referral_enrol_cnt / total_enrol_cnt * 100.0) if total_enrol_cnt > 0 else np.nan
+
+        st.markdown(
+            """
+            <style>
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
+              .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
+              .kpi-value { font-size: 1.4rem; font-weight: 700; }
+              .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        with k1:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Referral Created</div>"
+                f"<div class='kpi-value'>{referral_created_cnt:,}</div>"
+                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
+                unsafe_allow_html=True
+            )
+        with k2:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Referral Enrolments</div>"
+                f"<div class='kpi-value'>{referral_enrol_cnt:,}</div>"
+                f"<div class='kpi-sub'>Mode: {mode}</div></div>",
+                unsafe_allow_html=True
+            )
+        with k3:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Sales Generated (RIS)</div>"
+                f"<div class='kpi-value'>{referral_sales_gen:,}</div>"
+                f"<div class='kpi-sub'>Known Referral Intent Source</div></div>",
+                unsafe_allow_html=True
+            )
+        with k4:
+            pct_txt = "–" if np.isnan(pct_ref_of_total) else f"{pct_ref_of_total:.1f}%"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>% of Total Conversions</div>"
+                f"<div class='kpi-value'>{pct_txt}</div>"
+                f"<div class='kpi-sub'>Referral enrolments / All enrolments</div></div>",
+                unsafe_allow_html=True
+            )
+
+        st.markdown("---")
+
+        # ---------- Day-wise Trends ----------
+        st.markdown("### Day-wise Trends (in selected window)")
+        chart_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="ref_viewmode")
+
+        day_created = (
+            pd.DataFrame({"Date": C[mask_created_in_win & is_referral_deal]})
+              .groupby("Date").size().rename("Referral Created").reset_index()
+            if (mask_created_in_win & is_referral_deal).any()
+            else pd.DataFrame(columns=["Date","Referral Created"])
+        )
+        day_enrol = (
+            pd.DataFrame({"Date": P[enrol_ref_mask]})
+              .groupby("Date").size().rename("Referral Enrolments").reset_index()
+            if enrol_ref_mask.any()
+            else pd.DataFrame(columns=["Date","Referral Enrolments"])
+        )
+        day_join = pd.merge(day_created, day_enrol, on="Date", how="outer").fillna(0)
+
+        if chart_mode == "Graph" and not day_join.empty:
+            melt_day = day_join.melt(
+                id_vars=["Date"],
+                value_vars=["Referral Created","Referral Enrolments"],
+                var_name="Metric", value_name="Count"
+            )
+            ch_day = (
+                alt.Chart(melt_day)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("Date:T", title="Date"),
+                    y=alt.Y("Count:Q", title="Count"),
+                    color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
+                    tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q")]
+                )
+                .properties(height=320, title="Day-wise Referral Created vs Enrolments")
+            )
+            st.altair_chart(ch_day, use_container_width=True)
+        else:
+            st.dataframe(day_join.sort_values("Date"), use_container_width=True)
+            st.download_button(
+                "Download CSV — Day-wise Referral Created & Enrolments",
+                day_join.sort_values("Date").to_csv(index=False).encode("utf-8"),
+                "referrals_daywise.csv",
+                "text/csv",
+                key="ref_dl_day"
+            )
+
+        st.markdown("---")
+
+        # ---------- Referral Intent Source split ----------
+        st.markdown("### Referral Intent Source — Split (on Referral Enrolments)")
+        if _ris and _ris in df_f.columns:
+            ris_now = RIS[enrol_ref_mask]
+            if ris_now.any():
+                ris_tbl = (
+                    ris_now.value_counts(dropna=False)
+                          .rename_axis("Referral Intent Source")
+                          .rename("Count")
+                          .reset_index()
+                          .sort_values("Count", ascending=False)
+                )
+                view2 = st.radio("View as", ["Graph", "Table"], horizontal=True, key="ref_viewmode_ris")
+                if view2 == "Graph" and not ris_tbl.empty:
+                    ch_ris = (
+                        alt.Chart(ris_tbl)
+                        .mark_bar(opacity=0.9)
+                        .encode(
+                            x=alt.X("Referral Intent Source:N", sort=ris_tbl["Referral Intent Source"].tolist()),
+                            y=alt.Y("Count:Q"),
+                            tooltip=[alt.Tooltip("Referral Intent Source:N"), alt.Tooltip("Count:Q")]
+                        )
+                        .properties(height=360, title="Referral Intent Source split (Enrolments)")
+                    )
+                    st.altair_chart(ch_ris, use_container_width=True)
+                else:
+                    st.dataframe(ris_tbl, use_container_width=True)
+                    st.download_button(
+                        "Download CSV — RIS split (Enrolments)",
+                        ris_tbl.to_csv(index=False).encode("utf-8"),
+                        "referrals_ris_split.csv",
+                        "text/csv",
+                        key="ref_dl_ris"
+                    )
+            else:
+                st.info("No referral enrolments in range to split by Referral Intent Source.")
+        else:
+            st.info("Referral Intent Source column not found.")
+
+        st.markdown("---")
+
+        # ---------- Month-on-Month (Created & Enrolments) ----------
+        st.markdown("### Month-on-Month Progress")
+        end_month = pd.Period(range_end.replace(day=1), freq="M")
+        months = pd.period_range(end=end_month, periods=mom_trailing, freq="M")
+        months_list = months.astype(str).tolist()
+
+        C_month = coerce_datetime(df_f[_create]).dt.to_period("M")
+        P_month = coerce_datetime(df_f[_pay]).dt.to_period("M")
+
+        mom_created = (
+            pd.Series(1, index=df_f.index)
+            .where(is_referral_deal & C_month.isin(months), other=np.nan)
+            .groupby(C_month).count()
+            .reindex(months, fill_value=0)
+            .rename("Referral Created")
+            .rename_axis("_month").reset_index()
+        )
+        mom_created["Month"] = mom_created["_month"].astype(str)
+        mom_created = mom_created[["Month","Referral Created"]]
+
+        if mode == "MTD":
+            mtd_mask_mom = is_referral_deal & P_month.isin(months) & C_month.isin(months) & (P_month == C_month)
+            grp = pd.Series(1, index=df_f.index).where(mtd_mask_mom, other=np.nan).groupby(P_month).count()
+        else:
+            cohort_mask_mom = is_referral_deal & P_month.isin(months)
+            grp = pd.Series(1, index=df_f.index).where(cohort_mask_mom, other=np.nan).groupby(P_month).count()
+
+        mom_enrol = grp.reindex(months, fill_value=0).rename("Referral Enrolments").rename_axis("_month").reset_index()
+        mom_enrol["Month"] = mom_enrol["_month"].astype(str)
+        mom_enrol = mom_enrol[["Month","Referral Enrolments"]]
+
+        mom = mom_created.merge(mom_enrol, on="Month", how="outer").fillna(0)
+
+        choice_mom = st.radio("MoM view as", ["Graph", "Table"], horizontal=True, key="ref_viewmode_mom")
+        if choice_mom == "Graph" and not mom.empty:
+            melt_mom = mom.melt(id_vars=["Month"], value_vars=["Referral Created","Referral Enrolments"], var_name="Metric", value_name="Count")
+            ch_mom = (
+                alt.Chart(melt_mom)
                 .mark_bar(opacity=0.9)
                 .encode(
                     x=alt.X("Month:N", sort=months_list),
                     y=alt.Y("Count:Q"),
-                    color=alt.Color("Referral Intent Source:N", legend=alt.Legend(orient="bottom")),
-                    tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Referral Intent Source:N"), alt.Tooltip("Count:Q")]
+                    color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
+                    tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q")]
                 )
-                .properties(height=360, title=f"MoM — RIS split (Enrolments) • Mode: {mode}")
+                .properties(height=360, title=f"MoM — Referral Created & Enrolments • Mode: {mode}")
             )
-            st.altair_chart(ch_ris_mom, use_container_width=True)
-
-            with st.expander("Table — MoM RIS split"):
-                st.dataframe(ris_mom.sort_values(["Month","Count"], ascending=[True, False]), use_container_width=True)
-                st.download_button(
-                    "Download CSV — MoM RIS split",
-                    ris_mom.to_csv(index=False).encode("utf-8"),
-                    "referrals_mom_ris_split.csv",
-                    "text/csv",
-                    key="ref_dl_mom_ris"
-                )
+            st.altair_chart(ch_mom, use_container_width=True)
         else:
-            st.info("No referral enrolments with known Referral Intent Source in the MoM window.")
-    else:
-        st.info("Referral Intent Source column not found.")
-
-    # ---------- NEW: MoM Stacked — Sibling Deal (on referral enrolments) ----------
-    st.markdown("#### MoM — Sibling Deal split (on Referral Enrolments)")
-    sibling_col = find_col(df_f, ["Sibling Deal", "Sibling deal", "Sibling"])
-    if not sibling_col or sibling_col not in df_f.columns:
-        st.info("‘Sibling Deal’ column not found.", icon="ℹ️")
-    else:
-        sib_raw = df_f[sibling_col]
-
-        def _norm_sib(x):
-            s = str(x).strip().lower()
-            if s in {"true","yes","y","1"}:   return "Yes"
-            if s in {"false","no","n","0"}:   return "No"
-            if s in {"", "nan", "none"}:      return "Unknown"
-            return str(x)
-
-        sib_norm = sib_raw.map(_norm_sib).fillna("Unknown").astype(str)
-
-        if mode == "MTD":
-            sib_mask = is_referral_deal & P_month.isin(months) & C_month.isin(months) & (C_month == P_month)
-        else:
-            sib_mask = is_referral_deal & P_month.isin(months)
-
-        if sib_mask.any():
-            sib_mom = pd.DataFrame({
-                "Month": P_month[sib_mask].astype(str),
-                "Sibling Deal": sib_norm[sib_mask],
-            })
-            sib_mom = (
-                sib_mom.groupby(["Month","Sibling Deal"])
-                       .size().rename("Count").reset_index()
-                       .sort_values(["Month","Count"], ascending=[True, False])
+            st.dataframe(mom.sort_values("Month"), use_container_width=True)
+            st.download_button(
+                "Download CSV — MoM Created & Enrolments",
+                mom.sort_values("Month").to_csv(index=False).encode("utf-8"),
+                "referrals_mom_created_enrol.csv",
+                "text/csv",
+                key="ref_dl_mom"
             )
-            ch_sib = (
-                alt.Chart(sib_mom)
-                .mark_bar(opacity=0.9)
-                .encode(
-                    x=alt.X("Month:N", title="Month", sort=months_list),
-                    y=alt.Y("Count:Q", title="Referral Enrolments"),
-                    color=alt.Color("Sibling Deal:N", legend=alt.Legend(orient="bottom")),
-                    tooltip=[
-                        alt.Tooltip("Month:N", title="Month"),
-                        alt.Tooltip("Sibling Deal:N"),
-                        alt.Tooltip("Count:Q", title="Count"),
-                    ],
-                )
-                .properties(height=320, title=f"MoM — Sibling Deal split (Referral Enrolments • Mode: {mode})")
-            )
-            st.altair_chart(ch_sib, use_container_width=True)
 
-            with st.expander("Table — MoM Sibling Deal split"):
-                st.dataframe(sib_mom, use_container_width=True)
-                st.download_button(
-                    "Download CSV — MoM Sibling split",
-                    sib_mom.to_csv(index=False).encode("utf-8"),
-                    "referrals_mom_sibling_split.csv",
-                    "text/csv",
-                    key="ref_dl_mom_sibling",
+        # ---------- MoM split by RIS (enrolments) ----------
+        st.markdown("#### MoM — Referral Intent Source split (on Enrolments)")
+        if _ris and _ris in df_f.columns:
+            if mode == "MTD":
+                ris_mask_mom = is_referral_deal & P_month.isin(months) & C_month.isin(months) & (C_month == P_month) & has_sales_generated
+            else:
+                ris_mask_mom = is_referral_deal & P_month.isin(months) & has_sales_generated
+
+            if ris_mask_mom.any():
+                ris_mom = pd.DataFrame({
+                    "Month": P_month[ris_mask_mom].astype(str),
+                    "Referral Intent Source": RIS[ris_mask_mom],
+                })
+                ris_mom = (ris_mom.groupby(["Month","Referral Intent Source"]).size().rename("Count").reset_index())
+                ch_ris_mom = (
+                    alt.Chart(ris_mom)
+                    .mark_bar(opacity=0.9)
+                    .encode(
+                        x=alt.X("Month:N", sort=months_list),
+                        y=alt.Y("Count:Q"),
+                        color=alt.Color("Referral Intent Source:N", legend=alt.Legend(orient="bottom")),
+                        tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Referral Intent Source:N"), alt.Tooltip("Count:Q")]
+                    )
+                    .properties(height=360, title=f"MoM — RIS split (Enrolments) • Mode: {mode}")
                 )
+                st.altair_chart(ch_ris_mom, use_container_width=True)
+
+                with st.expander("Table — MoM RIS split"):
+                    st.dataframe(ris_mom.sort_values(["Month","Count"], ascending=[True, False]), use_container_width=True)
+                    st.download_button(
+                        "Download CSV — MoM RIS split",
+                        ris_mom.to_csv(index=False).encode("utf-8"),
+                        "referrals_mom_ris_split.csv",
+                        "text/csv",
+                        key="ref_dl_mom_ris"
+                    )
+            else:
+                st.info("No referral enrolments with known Referral Intent Source in the MoM window.")
         else:
-            st.info("No referral enrolments found in the selected MoM window to split by ‘Sibling Deal’.")
+            st.info("Referral Intent Source column not found.")
 
+        # ---------- MoM Stacked — Sibling Deal ----------
+        st.markdown("#### MoM — Sibling Deal split (on Referral Enrolments)")
+        sibling_col = find_col(df_f, ["Sibling Deal", "Sibling deal", "Sibling"])
+        if not sibling_col or sibling_col not in df_f.columns:
+            st.info("‘Sibling Deal’ column not found.", icon="ℹ️")
+        else:
+            sib_raw = df_f[sibling_col]
 
+            def _norm_sib(x):
+                s = str(x).strip().lower()
+                if s in {"true","yes","y","1"}:   return "Yes"
+                if s in {"false","no","n","0"}:   return "No"
+                if s in {"", "nan", "none"}:      return "Unknown"
+                return str(x)
+
+            sib_norm = sib_raw.map(_norm_sib).fillna("Unknown").astype(str)
+
+            if mode == "MTD":
+                sib_mask = is_referral_deal & P_month.isin(months) & C_month.isin(months) & (C_month == P_month)
+            else:
+                sib_mask = is_referral_deal & P_month.isin(months)
+
+            if sib_mask.any():
+                sib_mom = pd.DataFrame({
+                    "Month": P_month[sib_mask].astype(str),
+                    "Sibling Deal": sib_norm[sib_mask],
+                })
+                sib_mom = (
+                    sib_mom.groupby(["Month","Sibling Deal"])
+                           .size().rename("Count").reset_index()
+                           .sort_values(["Month","Count"], ascending=[True, False])
+                )
+                ch_sib = (
+                    alt.Chart(sib_mom)
+                    .mark_bar(opacity=0.9)
+                    .encode(
+                        x=alt.X("Month:N", title="Month", sort=months_list),
+                        y=alt.Y("Count:Q", title="Referral Enrolments"),
+                        color=alt.Color("Sibling Deal:N", legend=alt.Legend(orient="bottom")),
+                        tooltip=[
+                            alt.Tooltip("Month:N", title="Month"),
+                            alt.Tooltip("Sibling Deal:N"),
+                            alt.Tooltip("Count:Q", title="Count"),
+                        ],
+                    )
+                    .properties(height=320, title=f"MoM — Sibling Deal split (Referral Enrolments • Mode: {mode})")
+                )
+                st.altair_chart(ch_sib, use_container_width=True)
+
+                with st.expander("Table — MoM Sibling Deal split"):
+                    st.dataframe(sib_mom, use_container_width=True)
+                    st.download_button(
+                        "Download CSV — MoM Sibling split",
+                        sib_mom.to_csv(index=False).encode("utf-8"),
+                        "referrals_mom_sibling_split.csv",
+                        "text/csv",
+                        key="ref_dl_mom_sibling",
+                    )
+            else:
+                st.info("No referral enrolments found in the selected MoM window to split by ‘Sibling Deal’.")
+    # call the tab
+    _referrals_tab()
