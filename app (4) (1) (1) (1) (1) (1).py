@@ -3988,9 +3988,7 @@ elif view == "Referrals":
         display_mode = st.radio("Show as", ["Graphs", "Tables"], index=0, horizontal=True, key="ref_disp_mode")
 
         # Day-wise: Referral deals created
-        df_created = pd.DataFrame({
-            "_date": C[c_in & is_referral_deal]
-        })
+        df_created = pd.DataFrame({"_date": C[c_in & is_referral_deal]})
         if not df_created.empty:
             created_daily = (
                 df_created.groupby("_date").size().rename("ReferralDealsCreated").reset_index()
@@ -4030,11 +4028,14 @@ elif view == "Referrals":
         if display_mode == "Graphs":
             # Created
             if not created_daily.empty:
-                ch = alt.Chart(created_daily).mark_line(point=True) if graph_kind == "Line" else alt.Chart(created_daily).mark_bar(opacity=0.9)
+                ch = (alt.Chart(created_daily).mark_line(point=True)
+                      if graph_kind == "Line" else
+                      alt.Chart(created_daily).mark_bar(opacity=0.9))
                 ch = ch.encode(
                     x=alt.X("_date:T", title="Date"),
                     y=alt.Y("ReferralDealsCreated:Q", title="Count"),
-                    tooltip=[alt.Tooltip("_date:T","Date"), alt.Tooltip("ReferralDealsCreated:Q","Count")]
+                    tooltip=[alt.Tooltip("_date:T", title="Date"),
+                             alt.Tooltip("ReferralDealsCreated:Q", title="Count")]
                 ).properties(height=280, title="Day-wise Referral Deals Created")
                 st.altair_chart(ch, use_container_width=True)
             else:
@@ -4042,11 +4043,14 @@ elif view == "Referrals":
 
             # Enrolments
             if not paid_daily.empty:
-                ch2 = alt.Chart(paid_daily).mark_line(point=True) if graph_kind == "Line" else alt.Chart(paid_daily).mark_bar(opacity=0.9)
+                ch2 = (alt.Chart(paid_daily).mark_line(point=True)
+                       if graph_kind == "Line" else
+                       alt.Chart(paid_daily).mark_bar(opacity=0.9))
                 ch2 = ch2.encode(
                     x=alt.X("_date:T", title="Date"),
                     y=alt.Y("ReferralEnrolments:Q", title="Count"),
-                    tooltip=[alt.Tooltip("_date:T","Date"), alt.Tooltip("ReferralEnrolments:Q","Count")]
+                    tooltip=[alt.Tooltip("_date:T", title="Date"),
+                             alt.Tooltip("ReferralEnrolments:Q", title="Count")]
                 ).properties(height=280, title=f"Day-wise Referral Enrolments (Mode: {mode})")
                 st.altair_chart(ch2, use_container_width=True)
             else:
@@ -4058,7 +4062,9 @@ elif view == "Referrals":
                     x=alt.X("_date:T", title="Date"),
                     y=alt.Y("Count:Q", title="Count"),
                     color=alt.Color("Referral Intent Source:N", legend=alt.Legend(orient="bottom")),
-                    tooltip=[alt.Tooltip("_date:T","Date"), alt.Tooltip("Referral Intent Source:N"), alt.Tooltip("Count:Q")]
+                    tooltip=[alt.Tooltip("_date:T", title="Date"),
+                             alt.Tooltip("Referral Intent Source:N"),
+                             alt.Tooltip("Count:Q", title="Count")]
                 ).properties(height=320, title="Day-wise Split by Referral Intent Source (payments)")
                 st.altair_chart(ch3, use_container_width=True)
             else:
@@ -4094,17 +4100,16 @@ elif view == "Referrals":
         with colm2:
             mom_graph_kind = st.selectbox("Chart style (MoM)", ["Line", "Bars"], index=0, key="ref_mom_style")
 
-        # Build month index
-        end_month = date(range_end.year, range_end.month, 1)
-        start_m_yr = (end_month.replace(day=1) - pd.offsets.MonthBegin(trailing-1))
-        start_month = date(start_m_yr.year, start_m_yr.month, 1)
-        month_index = pd.period_range(start=start_month, end=end_month, freq="M")
+        # Build month index robustly with Periods
+        end_p   = pd.Period(range_end, freq="M")
+        start_p = end_p - (trailing - 1)
+        month_index = pd.period_range(start=start_p, end=end_p, freq="M")
 
-        # Month-wise created (referral)
+        # Month-wise period columns
         C_month = coerce_datetime(df_f[_create]).dt.to_period("M")
         P_month = coerce_datetime(df_f[_pay]).dt.to_period("M")
 
-        # Created counts (always by create-month)
+        # Created counts (always by create-month) for referral deals
         created_m = (
             pd.Series(1, index=df_f.index)
             .where(is_referral_deal & C_month.isin(month_index), 0)
@@ -4114,7 +4119,7 @@ elif view == "Referrals":
             .reset_index(names="Month")
         )
 
-        # Enrolments counts (mode logic)
+        # Enrolments counts (mode logic) for referral
         if mode == "MTD":
             enrol_m_mask = is_referral_deal & C_month.isin(month_index) & P_month.isin(month_index) & (C_month == P_month)
             enrol_m = (
@@ -4161,42 +4166,45 @@ elif view == "Referrals":
         mom["MonthStr"] = mom["Month"].astype(str)
 
         if display_mode == "Graphs":
-            # Created and Enrolments (dual)
             base_chart = alt.Chart(mom)
             if mom_graph_kind == "Line":
                 ch_c = base_chart.mark_line(point=True).encode(
                     x=alt.X("MonthStr:N", title="Month", sort=mom["MonthStr"].tolist()),
                     y=alt.Y("ReferralDealsCreated:Q", title="Referral Deals Created"),
-                    tooltip=[alt.Tooltip("MonthStr:N","Month"), alt.Tooltip("ReferralDealsCreated:Q","Created")]
+                    tooltip=[alt.Tooltip("MonthStr:N", title="Month"),
+                             alt.Tooltip("ReferralDealsCreated:Q", title="Created")]
                 ).properties(height=280, title="MoM – Referral Deals Created")
                 st.altair_chart(ch_c, use_container_width=True)
 
                 ch_e = base_chart.mark_line(point=True).encode(
                     x=alt.X("MonthStr:N", title="Month", sort=mom["MonthStr"].tolist()),
                     y=alt.Y("ReferralEnrolments:Q", title="Referral Enrolments"),
-                    tooltip=[alt.Tooltip("MonthStr:N","Month"), alt.Tooltip("ReferralEnrolments:Q","Enrolments")]
+                    tooltip=[alt.Tooltip("MonthStr:N", title="Month"),
+                             alt.Tooltip("ReferralEnrolments:Q", title="Enrolments")]
                 ).properties(height=280, title=f"MoM – Referral Enrolments (Mode: {mode})")
                 st.altair_chart(ch_e, use_container_width=True)
             else:
                 ch_c = base_chart.mark_bar(opacity=0.9).encode(
                     x=alt.X("MonthStr:N", title="Month", sort=mom["MonthStr"].tolist()),
                     y=alt.Y("ReferralDealsCreated:Q", title="Referral Deals Created"),
-                    tooltip=[alt.Tooltip("MonthStr:N","Month"), alt.Tooltip("ReferralDealsCreated:Q","Created")]
+                    tooltip=[alt.Tooltip("MonthStr:N", title="Month"),
+                             alt.Tooltip("ReferralDealsCreated:Q", title="Created")]
                 ).properties(height=280, title="MoM – Referral Deals Created")
                 st.altair_chart(ch_c, use_container_width=True)
 
                 ch_e = base_chart.mark_bar(opacity=0.9).encode(
                     x=alt.X("MonthStr:N", title="Month", sort=mom["MonthStr"].tolist()),
                     y=alt.Y("ReferralEnrolments:Q", title="Referral Enrolments"),
-                    tooltip=[alt.Tooltip("MonthStr:N","Month"), alt.Tooltip("ReferralEnrolments:Q","Enrolments")]
+                    tooltip=[alt.Tooltip("MonthStr:N", title="Month"),
+                             alt.Tooltip("ReferralEnrolments:Q", title="Enrolments")]
                 ).properties(height=280, title=f"MoM – Referral Enrolments (Mode: {mode})")
                 st.altair_chart(ch_e, use_container_width=True)
 
-            # % of total
             ch_pct = alt.Chart(mom).mark_line(point=True).encode(
                 x=alt.X("MonthStr:N", title="Month", sort=mom["MonthStr"].tolist()),
                 y=alt.Y("PctRefInTotal:Q", title="% of total enrolments"),
-                tooltip=[alt.Tooltip("MonthStr:N","Month"), alt.Tooltip("PctRefInTotal:Q", format=".1f", title="% of total")]
+                tooltip=[alt.Tooltip("MonthStr:N", title="Month"),
+                         alt.Tooltip("PctRefInTotal:Q", format=".1f", title="% of total")]
             ).properties(height=300, title="% of Enrolments that are Referrals (MoM)")
             st.altair_chart(ch_pct, use_container_width=True)
         else:
@@ -4234,7 +4242,9 @@ elif view == "Referrals":
                     x=alt.X("MonthStr:N", title="Month", sort=mom["MonthStr"].tolist()),
                     y=alt.Y("Count:Q", title="Count"),
                     color=alt.Color("Referral Intent Source:N", legend=alt.Legend(orient="bottom")),
-                    tooltip=[alt.Tooltip("MonthStr:N","Month"), alt.Tooltip("Referral Intent Source:N"), alt.Tooltip("Count:Q")]
+                    tooltip=[alt.Tooltip("MonthStr:N", title="Month"),
+                             alt.Tooltip("Referral Intent Source:N"),
+                             alt.Tooltip("Count:Q", title="Count")]
                 ).properties(height=320, title=f"MoM – Split by Referral Intent Source (Mode: {mode})")
                 st.altair_chart(chs, use_container_width=True)
             else:
@@ -4251,5 +4261,3 @@ elif view == "Referrals":
 
     # run
     _referrals_tab()
-
-
