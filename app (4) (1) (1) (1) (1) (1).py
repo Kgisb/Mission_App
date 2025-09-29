@@ -3396,233 +3396,180 @@ elif view == "Dashboard":
                 outc = outc.sort_values("Enrolments", ascending=False)
                 st.dataframe(outc, use_container_width=True)
 
+        # ===============================
+        # Day-wise Explorer (ADDITIONAL)
+        # ===============================
+        st.markdown("### Day-wise Explorer")
 
-elif view == "Predictibility":
-    import pandas as pd, numpy as np
-    from datetime import date
-    from calendar import monthrange
-    import altair as alt
+        # Resolve optional grouping columns
+        _src_col = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cty_col = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+        _refi_col = find_col(df_f, ["Referral Intent Source","Referral intent source"])
 
-    st.subheader("Predictibility – Running Month Enrolment Forecast (row counts)")
-
-    # ---------- Resolve columns (Create / Payment / Source) ----------
-    def _pick(df, preferred, cands):
-        if preferred and preferred in df.columns: return preferred
-        for c in cands:
-            if c in df.columns: return c
-        return None
-
-    _create = _pick(df_f, globals().get("create_col"),
-                    ["Create Date","Created Date","Deal Create Date","CreateDate","Created On"])
-    _pay    = _pick(df_f, globals().get("pay_col"),
-                    ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate","Paid On"])
-    _src    = _pick(df_f, globals().get("source_col"),
-                    ["JetLearn Deal Source","Deal Source","Source","_src_raw","Lead Source"])
-
-    if not _create or not _pay:
-        st.warning("Predictibility needs 'Create Date' and 'Payment Received Date' columns. Please map them.", icon="⚠️")
-    else:
-        # ---------- Controls ----------
-        c1, c2 = st.columns(2)
-        with c1:
-            lookback = st.selectbox("Lookback months (exclude current)", [3, 6, 12], index=0)
-        with c2:
-            weighted = st.checkbox("Recency-weighted learning", value=True, help="Weights recent months higher when estimating daily averages.")
-
-        # ---------- Prep dataframe ----------
-        dfp = df_f.copy()
-        # If your data is MM/DD/YYYY set dayfirst=False
-        dfp["_C"] = pd.to_datetime(dfp[_create], errors="coerce", dayfirst=True)
-        dfp["_P"] = pd.to_datetime(dfp[_pay],    errors="coerce", dayfirst=True)
-        dfp["_SRC"] = (dfp[_src].fillna("Unknown").astype(str)) if _src else "All"
-
-        # ---------- Current month window ----------
-        today_d = date.today()
-        mstart  = date(today_d.year, today_d.month, 1)
-        mlen    = monthrange(today_d.year, today_d.month)[1]
-        mend    = date(today_d.year, today_d.month, mlen)
-        days_elapsed = (today_d - mstart).days + 1
-        days_left    = max(0, mlen - days_elapsed)
-
-        # =========================================================
-        # A = sum of per-day payment counts from 1st → today (ROW COUNT)
-        # =========================================================
-        mask_pay_cur_mtd = dfp["_P"].dt.date.between(mstart, today_d)
-        daily_counts = (
-            dfp.loc[mask_pay_cur_mtd, "_P"].dt.date
-               .value_counts()
-               .sort_index()
+        metric_pick = st.selectbox(
+            "Metric",
+            ["Deals Created (per day)", "Enrolments (per day)"],
+            index=0,
+            help="Deals use Create Date; Enrolments use Payment Received Date (MTD also requires Create in range)."
         )
-        A = int(daily_counts.sum())
 
-        # =========================================================
-        # Learn historical DAILY averages (row counts) for SAME vs PREV
-        #   SAME: payments whose CreateMonth == PayMonth
-        #   PREV: payments whose CreateMonth <  PayMonth
-        # Over last K full months (exclude current). Optionally recency-weighted.
-        # =========================================================
-        cur_per  = pd.Period(today_d, freq="M")
-        months   = [cur_per - i for i in range(1, lookback+1)]
-        hist_rows = []
-        C_per_series = dfp["_C"].dt.to_period("M")
+        group_pick = st.selectbox(
+            "Group (optional)",
+            ["None", "JetLearn Deal Source", "Country", "Referral Intent Source"],
+            index=0,
+            help="Choose a dimension to split by (used for stacked or multi-series)."
+        )
 
-        for per in months:
-            ms = date(per.year, per.month, 1)
-            ml = monthrange(per.year, per.month)[1]
-            me = date(per.year, per.month, ml)
+        chart_type = st.selectbox(
+            "Chart type",
+            ["Line", "Bar", "Stacked Bars"],
+            index=0
+        )
 
-            pay_mask = dfp["_P"].dt.date.between(ms, me)
-            if not pay_mask.any():
-                hist_rows.append({"per": per, "days": ml, "same": 0, "prev": 0})
-                continue
-
-            same_rows = int((pay_mask & (C_per_series == per)).sum())
-            prev_rows = int((pay_mask & (C_per_series <  per)).sum())
-            hist_rows.append({"per": per, "days": ml, "same": same_rows, "prev": prev_rows})
-
-        hist = pd.DataFrame(hist_rows)
-
-        if hist.empty:
-            daily_same = 0.0
-            daily_prev = 0.0
+        # Build base series (dates already normalized above)
+        date_index = pd.date_range(start_d, end_d, freq="D").date
+        if metric_pick.startswith("Deals"):
+            # Created per day
+            day_series = c_ts
+            in_window = mask_created_in_win  # already computed above
+            metric_name = "Deals Created"
         else:
-            if weighted:
-                hist = hist.sort_values("per")
-                hist["w"] = np.arange(1, len(hist)+1)           # 1..K (newest gets highest weight)
-                w_days = (hist["days"] * hist["w"]).sum()
-                w_same = (hist["same"] * hist["w"]).sum()
-                w_prev = (hist["prev"] * hist["w"]).sum()
+            # Enrolments per day
+            day_series = p_ts
+            if mode.startswith("MTD"):
+                # use the numerator mask you already built (created & paid in window)
+                in_window = num_mask
             else:
-                w_days = hist["days"].sum()
-                w_same = hist["same"].sum()
-                w_prev = hist["prev"].sum()
+                in_window = between_date(p_ts, start_d, end_d)
+            metric_name = "Enrolments"
 
-            daily_same = (w_same / w_days) if w_days > 0 else 0.0
-            daily_prev = (w_prev / w_days) if w_days > 0 else 0.0
+        df_day = df_f.loc[in_window].copy()
+        df_day["_day"] = day_series.loc[in_window]
 
-        # =========================================================
-        # Forecast remaining (row counts)
-        #   B = daily_same * days_left
-        #   C = daily_prev * days_left
-        # =========================================================
-        B = float(daily_same * days_left)
-        C = float(daily_prev * days_left)
-        Projected_Total = float(A + B + C)
+        # Pick grouping column (optional)
+        grp_col = None
+        if group_pick == "JetLearn Deal Source" and _src_col and _src_col in df_day.columns:
+            grp_col = _src_col
+        elif group_pick == "Country" and _cty_col and _cty_col in df_day.columns:
+            grp_col = _cty_col
+        elif group_pick == "Referral Intent Source" and _refi_col and _refi_col in df_day.columns:
+            grp_col = _refi_col
 
-        # ---------- KPIs ----------
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("A · Actual to date (row count)", f"{A:,}", help=f"Payments between {mstart.isoformat()} and {today_d.isoformat()}")
-        k2.metric("B · Remaining (same-month creates)", f"{B:.1f}", help=f"Expected in remaining {days_left} day(s) from deals created this month")
-        k3.metric("C · Remaining (prev-months creates)", f"{C:.1f}", help="Expected in remaining days from deals created before this month")
-        k4.metric("Projected Month-End", f"{Projected_Total:.1f}", help="A + B + C")
-
-        st.caption(
-            f"Month **{mstart.strftime('%b %Y')}** • Days elapsed **{days_elapsed}/{mlen}** • "
-            f"Hist daily (same, prev): **{daily_same:.2f}**, **{daily_prev:.2f}** "
-            f"(lookback={lookback}{', weighted' if weighted else ''})"
-        )
-
-        # ---------- Optional: Per-source breakdown (row counts) ----------
-        a_by_src = (
-            dfp.loc[mask_pay_cur_mtd, ["_SRC"]]
-               .assign(_ones=1)
-               .groupby("_SRC")["_ones"].sum()
-               .rename("A_Actual_ToDate")
-               .reset_index()
-        )
-
-        def _hist_dist(component: str):
-            parts = []
-            for per in months:
-                ms = date(per.year, per.month, 1)
-                ml = monthrange(per.year, per.month)[1]
-                me = date(per.year, per.month, ml)
-
-                pay_mask = dfp["_P"].dt.date.between(ms, me)
-                if not pay_mask.any(): 
-                    continue
-
-                if component == "same":
-                    subset_idx = pay_mask & (C_per_series == per)
-                else:
-                    subset_idx = pay_mask & (C_per_series <  per)
-
-                if not subset_idx.any(): 
-                    continue
-
-                grp = dfp.loc[subset_idx].groupby("_SRC").size().rename("cnt").reset_index()
-                grp["per"] = per
-                parts.append(grp)
-
-            if not parts:
-                return pd.DataFrame(columns=["_SRC","cnt"])
-
-            dist = pd.concat(parts, ignore_index=True)
-            if weighted and "per" in dist.columns:
-                per_to_w = {p: (i+1) for i, p in enumerate(sorted(months))}
-                dist["w"] = dist["per"].map(per_to_w).fillna(1)
-                dist["wcnt"] = dist["cnt"] * dist["w"]
-                out = dist.groupby("_SRC")["wcnt"].sum().rename("cnt").reset_index()
-            else:
-                out = dist.groupby("_SRC")["cnt"].sum().reset_index()
-            return out
-
-        same_dist = _hist_dist("same")
-        prev_dist = _hist_dist("prev")
-
-        all_srcs = sorted(set(a_by_src["_SRC"]).union(set(same_dist["_SRC"])).union(set(prev_dist["_SRC"])) or {"All"})
-        out = pd.DataFrame({"Source": all_srcs})
-        out = out.merge(a_by_src.rename(columns={"_SRC":"Source"}), on="Source", how="left").fillna({"A_Actual_ToDate":0})
-
-        def _alloc(total, dist_df, fallback_series):
-            if dist_df.empty:
-                weights = fallback_series.copy()
-            else:
-                weights = dist_df.set_index("_SRC")["cnt"].reindex(all_srcs).fillna(0.0)
-            if (weights > 0).any():
-                w = weights / weights.sum()
-            else:
-                if (fallback_series > 0).any():
-                    w = fallback_series / fallback_series.sum()
-                else:
-                    w = pd.Series(1.0/len(all_srcs), index=all_srcs)
-            return (total * w).reindex(all_srcs).values
-
-        fallback = out.set_index("Source")["A_Actual_ToDate"].astype(float)
-        out["B_Remaining_SameMonth"]    = _alloc(B,  same_dist, fallback)
-        out["C_Remaining_PrevMonths"]   = _alloc(C,  prev_dist, fallback)
-        out["Projected_MonthEnd_Total"] = out["A_Actual_ToDate"] + out["B_Remaining_SameMonth"] + out["C_Remaining_PrevMonths"]
-        out = out.sort_values("Projected_MonthEnd_Total", ascending=False)
+        # Aggregate
+        if grp_col:
+            g = (
+                df_day.assign(_ones=1)
+                      .groupby([pd.to_datetime(df_day["_day"]).dt.date, grp_col], dropna=False)["_ones"]
+                      .sum()
+                      .rename("Count")
+                      .reset_index()
+                      .rename(columns={grp_col: "Group", "_day": "Date"})
+            )
+        else:
+            g = (
+                df_day.assign(_ones=1)
+                      .groupby(pd.to_datetime(df_day["_day"]).dt.date, dropna=False)["_ones"]
+                      .sum()
+                      .rename("Count")
+                      .reset_index()
+                      .rename(columns={"_day": "Date"})
+            )
+            # ensure full date spine
+            g = pd.DataFrame({"Date": date_index}).merge(g, on="Date", how="left").fillna({"Count": 0})
 
         # Chart
-        chart_df = out.melt(id_vars=["Source"],
-                            value_vars=["A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths"],
-                            var_name="Component", value_name="Count")
-        st.altair_chart(
-            alt.Chart(chart_df).mark_bar().encode(
-                x=alt.X("Source:N", sort="-y"),
-                y=alt.Y("Count:Q"),
-                color=alt.Color("Component:N"),
-                tooltip=["Source","Component","Count"]
-            ).properties(height=340),
-            use_container_width=True
-        )
+        if g.empty:
+            st.info("No rows for the chosen settings.")
+        else:
+            # Order dates
+            g["Date"] = pd.to_datetime(g["Date"])
+            g = g.sort_values("Date")
+            date_order = g["Date"].dt.strftime("%Y-%m-%d").unique().tolist()
+            g["_DateStr"] = g["Date"].dt.strftime("%Y-%m-%d")
 
-        # Table + download
-        with st.expander("Detailed table (by source)"):
-            show_cols = ["Source","A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total"]
-            tbl = out[show_cols].copy()
-            for c in show_cols[1:]:
-                tbl[c] = tbl[c].astype(float).round(3)
-            st.dataframe(tbl, use_container_width=True)
-            st.download_button("Download CSV", tbl.to_csv(index=False).encode("utf-8"),
-                               file_name="predictibility_by_source.csv", mime="text/csv")
+            if grp_col:
+                # Multi-series charts
+                if chart_type == "Line":
+                    ch = (
+                        alt.Chart(g)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name),
+                            color=alt.Color("Group:N", title=group_pick),
+                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
+                                     alt.Tooltip("Group:N", title=group_pick),
+                                     alt.Tooltip("Count:Q", title=metric_name)]
+                        )
+                        .properties(height=360, title=f"{metric_name} — day-wise by {group_pick} ({mode})")
+                    )
+                elif chart_type == "Bar":
+                    ch = (
+                        alt.Chart(g)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name),
+                            color=alt.Color("Group:N", title=group_pick),
+                            xOffset=alt.XOffset("Group:N"),
+                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
+                                     alt.Tooltip("Group:N", title=group_pick),
+                                     alt.Tooltip("Count:Q", title=metric_name)]
+                        )
+                        .properties(height=360, title=f"{metric_name} — grouped bars by {group_pick} ({mode})")
+                    )
+                else:  # Stacked Bars
+                    ch = (
+                        alt.Chart(g)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name, stack="zero"),
+                            color=alt.Color("Group:N", title=group_pick),
+                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
+                                     alt.Tooltip("Group:N", title=group_pick),
+                                     alt.Tooltip("Count:Q", title=metric_name)]
+                        )
+                        .properties(height=360, title=f"{metric_name} — stacked by {group_pick} ({mode})")
+                    )
+            else:
+                # Single-series charts
+                if chart_type == "Line":
+                    ch = (
+                        alt.Chart(g)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name),
+                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
+                                     alt.Tooltip("Count:Q", title=metric_name)]
+                        )
+                        .properties(height=360, title=f"{metric_name} — day-wise ({mode})")
+                    )
+                else:  # Bar or Stacked both reduce to simple bars without a group
+                    ch = (
+                        alt.Chart(g)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("_DateStr:N", sort=date_order, title="Date"),
+                            y=alt.Y("Count:Q", title=metric_name),
+                            tooltip=[alt.Tooltip("_DateStr:N", title="Date"),
+                                     alt.Tooltip("Count:Q", title=metric_name)]
+                        )
+                        .properties(height=360, title=f"{metric_name} — day-wise ({mode})")
+                    )
 
-        # (Optional) quick sanity
-        with st.expander("Sanity checks"):
-            st.write({
-                "Create col": _create, "Payment col": _pay, "Source col": _src or "All",
-                "A_rows_mtd": A, "days_left": days_left,
-                "daily_same_hist": round(daily_same, 3), "daily_prev_hist": round(daily_prev, 3),
-                "lookback": lookback, "weighted": weighted,
-            })
+            st.altair_chart(ch, use_container_width=True)
+
+            with st.expander("Show / Download day-wise data"):
+                show_cols = ["Date", "Count"] + (["Group"] if "Group" in g.columns else [])
+                out_tbl = g[show_cols].copy()
+                out_tbl["Date"] = out_tbl["Date"].dt.date
+                st.dataframe(out_tbl, use_container_width=True)
+                st.download_button(
+                    "Download CSV — Day-wise",
+                    data=out_tbl.to_csv(index=False).encode("utf-8"),
+                    file_name="dashboard_daywise.csv",
+                    mime="text/csv",
+                    key="dash_daywise_dl",
+                )
