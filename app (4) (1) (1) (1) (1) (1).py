@@ -3604,150 +3604,231 @@ elif view == "Dashboard":
                     key="dash_daywise_dl"
                 )
 elif view == "Predictibility":
-    st.subheader("Predictibility – Running Month Enrolment Forecast")
-    st.caption("A = payments to date; B = remaining (same-month created rate); C = remaining (prev-months created rate).")
-    colp1, colp2, colp3 = st.columns([1,1,2])
-    with colp1:
-        lookback = st.selectbox("Lookback window (months)", [3, 6, 12], index=0)
-    with colp2:
-        st.markdown("**Averaging:** Recency-weighted"); weighted = True
-    with colp3:
-        st.info("Rates computed per source over the last K pay-months (excluding current).")
+    import pandas as pd, numpy as np
+    from datetime import date
+    from calendar import monthrange
+    import altair as alt
 
-    cur_start, cur_end = month_bounds(today)
-    d_preview = add_month_cols(df_f, create_col, pay_col)
-    cur_period = pd.Period(today, freq="M")
-    in_cur_pay = d_preview["_pay_m"] == cur_period
-    st.caption(f"Payments found this month (after filters): **{int(in_cur_pay.sum()):,}**")
+    st.subheader("Predictibility – Running Month Enrolment Forecast (row counts)")
 
-    tbl, totals = predict_running_month(df_f, create_col, pay_col, source_col, lookback, weighted, today)
+    # ---------- Resolve columns (Create / Payment / Source) ----------
+    def _pick(df, preferred, cands):
+        if preferred and preferred in df.columns: return preferred
+        for c in cands:
+            if c in df.columns: return c
+        return None
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>A · Actual to date</div><div class='kpi-value' style='color:{PALETTE['A_actual']}'>{totals['A_Actual_ToDate']:.1f}</div></div>", unsafe_allow_html=True)
-    with c2: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>B · Remaining (same-month)</div><div class='kpi-value' style='color:{PALETTE['Rem_same']}'>{totals['B_Remaining_SameMonth']:.1f}</div></div>", unsafe_allow_html=True)
-    with c3: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>C · Remaining (prev-months)</div><div class='kpi-value' style='color:{PALETTE['Rem_prev']}'>{totals['C_Remaining_PrevMonths']:.1f}</div></div>", unsafe_allow_html=True)
-    with c4: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Projected Month-End</div><div class='kpi-value' style='color:{PALETTE['Total']}'>{totals['Projected_MonthEnd_Total']:.1f}</div><div class='kpi-sub'>A + B + C</div></div>", unsafe_allow_html=True)
+    _create = _pick(df_f, globals().get("create_col"),
+                    ["Create Date","Created Date","Deal Create Date","CreateDate","Created On"])
+    _pay    = _pick(df_f, globals().get("pay_col"),
+                    ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate","Paid On"])
+    _src    = _pick(df_f, globals().get("source_col"),
+                    ["JetLearn Deal Source","Deal Source","Source","_src_raw","Lead Source"])
 
-    st.altair_chart(predict_chart_stacked(tbl), use_container_width=True)
-
-    with st.expander("Detailed table (by source)"):
-        show_cols = ["Source","A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total","Rate_Same_Daily","Rate_Prev_Daily","Remaining_Days"]
-        if not tbl.empty:
-            view_tbl = tbl[show_cols].copy()
-            for c in ["B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total","Rate_Same_Daily","Rate_Prev_Daily"]:
-                view_tbl[c] = view_tbl[c].astype(float).round(3)
-            st.dataframe(view_tbl, use_container_width=True)
-            csv = view_tbl.to_csv(index=False).encode("utf-8")
-            st.download_button("Download CSV", data=csv, file_name="predictibility_by_source.csv", mime="text/csv")
-        else:
-            st.info("No data in scope for the running month after filters.")
-
-    st.subheader("Model Accuracy")
-    bt, metrics = backtest_accuracy(df_f, create_col, pay_col, source_col, lookback=lookback, weighted=True, backtest_months=lookback, today=date.today())
-    acc_pct = np.nan
-    if not pd.isna(metrics.get("WAPE", np.nan)):
-        acc_pct = max(0.0, min(100.0, (1.0 - metrics["WAPE"]) * 100.0))
-    elif not pd.isna(metrics.get("MAPE", np.nan)):
-        acc_pct = max(0.0, min(100.0, (1.0 - metrics["MAPE"]) * 100.0))
-    st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Model Accuracy (100 − WAPE)</div><div class='kpi-value'>{'–' if pd.isna(acc_pct) else f'{acc_pct:.1f}%'}</div></div>", unsafe_allow_html=True)
-
-    show_details = st.checkbox("Show detailed metrics", value=False)
-    if show_details:
-        m1, m2, m3, m4, m5 = st.columns(5)
-        def fmt(x, pct=False): return "–" if pd.isna(x) else (f"{x*100:.1f}%" if pct else f"{x:.2f}")
-        with m1: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>MAPE</div><div class='kpi-value'>{fmt(metrics['MAPE'], pct=True)}</div></div>", unsafe_allow_html=True)
-        with m2: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>WAPE</div><div class='kpi-value'>{fmt(metrics['WAPE'], pct=True)}</div></div>", unsafe_allow_html=True)
-        with m3: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>MAE</div><div class='kpi-value'>{fmt(metrics['MAE'])}</div></div>", unsafe_allow_html=True)
-        with m4: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>RMSE</div><div class='kpi-value'>{fmt(metrics['RMSE'])}</div></div>", unsafe_allow_html=True)
-        with m5: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>R²</div><div class='kpi-value'>{fmt(metrics['R2'])}</div></div>", unsafe_allow_html=True)
-        if bt.empty:
-            st.info("Not enough historical data to backtest with the chosen settings.")
-        else:
-            st.altair_chart(accuracy_scatter(bt), use_container_width=True)
-
-    # ======================
-    # Inactivity snapshot (relative to today)
-    # ======================
-    st.markdown("### Inactivity snapshot (relative to today)")
-
-    # Resolve columns flexibly
-    last_activity_col = find_col(df, ["LastActivityDate", "Last Activity Date", "LastActivityTest", "Last Activity"])
-    last_connected_col = find_col(df, ["LastConnectedDate", "Last Connected Date", "LastContacted", "Last Contacted"])
-
-    # Toggle which measure to use
-    pick = st.radio(
-        "Measure",
-        ["Last Activity Date", "Last Connected"],
-        horizontal=True,
-        index=0,
-        help="Counts deals where the chosen 'last touch' happened ≥ N days ago, relative to today."
-    )
-
-    # Pick column based on toggle
-    if pick == "Last Activity Date":
-        col_pick = last_activity_col
-        missing_msg = "Last Activity Date column not found."
+    if not _create or not _pay:
+        st.warning("Predictibility needs 'Create Date' and 'Payment Received Date' columns. Please map them.", icon="⚠️")
     else:
-        col_pick = last_connected_col
-        missing_msg = "Last Connected column not found."
+        # ---------- Controls ----------
+        c1, c2 = st.columns(2)
+        with c1:
+            lookback = st.selectbox("Lookback months (exclude current)", [3, 6, 12], index=0)
+        with c2:
+            weighted = st.checkbox("Recency-weighted learning", value=True, help="Weights recent months higher when estimating daily averages.")
 
-    if not col_pick or col_pick not in df_f.columns:
-        st.warning(missing_msg + " This snapshot cannot be computed for the selected option.", icon="⚠️")
-    else:
-        # Slider (seek bar): days since >= N
-        thr = st.slider("Days since last touch ≥", min_value=0, max_value=180, value=7, step=1)
+        # ---------- Prep dataframe ----------
+        dfp = df_f.copy()
+        # If your data is MM/DD/YYYY set dayfirst=False
+        dfp["_C"] = pd.to_datetime(dfp[_create], errors="coerce", dayfirst=True)
+        dfp["_P"] = pd.to_datetime(dfp[_pay],    errors="coerce", dayfirst=True)
+        dfp["_SRC"] = (dfp[_src].fillna("Unknown").astype(str)) if _src else "All"
 
-        # Normalized datetime and age in days (relative to today)
-        s = coerce_datetime(df_f[col_pick])
-        today_ts = pd.Timestamp(date.today())
-        # convert to age (days); future dates become negative ⇒ clip to 0 so they don't get counted accidentally
-        age_days = (today_ts - s).dt.days
-        age_days = age_days.where(s.notna(), np.nan).clip(lower=0)
+        # ---------- Current month window ----------
+        today_d = date.today()
+        mstart  = date(today_d.year, today_d.month, 1)
+        mlen    = monthrange(today_d.year, today_d.month)[1]
+        mend    = date(today_d.year, today_d.month, mlen)
+        days_elapsed = (today_d - mstart).days + 1
+        days_left    = max(0, mlen - days_elapsed)
 
-        # Include unknowns?
-        include_unknown = st.checkbox(
-            "Include deals with unknown/missing dates",
-            value=False,
-            help="When ON, deals with no date recorded are included in the count."
+        # =========================================================
+        # A = sum of per-day payment counts from 1st → today (ROW COUNT)
+        # =========================================================
+        mask_pay_cur_mtd = dfp["_P"].dt.date.between(mstart, today_d)
+        daily_counts = (
+            dfp.loc[mask_pay_cur_mtd, "_P"].dt.date
+               .value_counts()
+               .sort_index()
+        )
+        A = int(daily_counts.sum())
+
+        # =========================================================
+        # Learn historical DAILY averages (row counts) for SAME vs PREV
+        #   SAME: payments whose CreateMonth == PayMonth
+        #   PREV: payments whose CreateMonth <  PayMonth
+        # Over last K full months (exclude current). Optionally recency-weighted.
+        # =========================================================
+        cur_per  = pd.Period(today_d, freq="M")
+        months   = [cur_per - i for i in range(1, lookback+1)]
+        hist_rows = []
+        C_per_series = dfp["_C"].dt.to_period("M")
+
+        for per in months:
+            ms = date(per.year, per.month, 1)
+            ml = monthrange(per.year, per.month)[1]
+            me = date(per.year, per.month, ml)
+
+            pay_mask = dfp["_P"].dt.date.between(ms, me)
+            if not pay_mask.any():
+                hist_rows.append({"per": per, "days": ml, "same": 0, "prev": 0})
+                continue
+
+            same_rows = int((pay_mask & (C_per_series == per)).sum())
+            prev_rows = int((pay_mask & (C_per_series <  per)).sum())
+            hist_rows.append({"per": per, "days": ml, "same": same_rows, "prev": prev_rows})
+
+        hist = pd.DataFrame(hist_rows)
+
+        if hist.empty:
+            daily_same = 0.0
+            daily_prev = 0.0
+        else:
+            if weighted:
+                hist = hist.sort_values("per")
+                hist["w"] = np.arange(1, len(hist)+1)           # 1..K (newest gets highest weight)
+                w_days = (hist["days"] * hist["w"]).sum()
+                w_same = (hist["same"] * hist["w"]).sum()
+                w_prev = (hist["prev"] * hist["w"]).sum()
+            else:
+                w_days = hist["days"].sum()
+                w_same = hist["same"].sum()
+                w_prev = hist["prev"].sum()
+
+            daily_same = (w_same / w_days) if w_days > 0 else 0.0
+            daily_prev = (w_prev / w_days) if w_days > 0 else 0.0
+
+        # =========================================================
+        # Forecast remaining (row counts)
+        #   B = daily_same * days_left
+        #   C = daily_prev * days_left
+        # =========================================================
+        B = float(daily_same * days_left)
+        C = float(daily_prev * days_left)
+        Projected_Total = float(A + B + C)
+
+        # ---------- KPIs ----------
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("A · Actual to date (row count)", f"{A:,}", help=f"Payments between {mstart.isoformat()} and {today_d.isoformat()}")
+        k2.metric("B · Remaining (same-month creates)", f"{B:.1f}", help=f"Expected in remaining {days_left} day(s) from deals created this month")
+        k3.metric("C · Remaining (prev-months creates)", f"{C:.1f}", help="Expected in remaining days from deals created before this month")
+        k4.metric("Projected Month-End", f"{Projected_Total:.1f}", help="A + B + C")
+
+        st.caption(
+            f"Month **{mstart.strftime('%b %Y')}** • Days elapsed **{days_elapsed}/{mlen}** • "
+            f"Hist daily (same, prev): **{daily_same:.2f}**, **{daily_prev:.2f}** "
+            f"(lookback={lookback}{', weighted' if weighted else ''})"
         )
 
-        # Build mask: (known & age >= thr) OR (include unknown & missing)
-        mask_known_old = s.notna() & (age_days >= thr)
-        mask = mask_known_old | (include_unknown & s.isna())
-
-        # Count + preview
-        count_val = int(mask.sum())
-
-        # KPI card
-        st.markdown(
-            f"<div class='kpi-card'>"
-            f"<div class='kpi-title'>Deals with {pick.lower()} ≥ {thr} day(s) ago</div>"
-            f"<div class='kpi-value'>{count_val:,}</div>"
-            f"<div class='kpi-sub'>Reference date: {date.today().isoformat()} • "
-            f"{'Unknowns included' if include_unknown else 'Unknowns excluded'}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
+        # ---------- Optional: Per-source breakdown (row counts) ----------
+        a_by_src = (
+            dfp.loc[mask_pay_cur_mtd, ["_SRC"]]
+               .assign(_ones=1)
+               .groupby("_SRC")["_ones"].sum()
+               .rename("A_Actual_ToDate")
+               .reset_index()
         )
 
-        # Optional small preview (top 200)
-        with st.expander("Preview matching deals (top 200)"):
-            show_cols = []
-            if create_col: show_cols.append(create_col)
-            show_cols.append(col_pick)
-            if counsellor_col: show_cols.append(counsellor_col)
-            if source_col: show_cols.append(source_col)
-            if country_col: show_cols.append(country_col)
-            prev = df_f.loc[mask, show_cols].copy() if show_cols else df_f.loc[mask].copy()
+        def _hist_dist(component: str):
+            parts = []
+            for per in months:
+                ms = date(per.year, per.month, 1)
+                ml = monthrange(per.year, per.month)[1]
+                me = date(per.year, per.month, ml)
 
-            # Append computed "Days Since" for clarity
-            prev["_DaysSince"] = age_days.loc[prev.index]
-            prev = prev.sort_values("_DaysSince", ascending=False)
-            st.dataframe(prev.head(200), use_container_width=True)
+                pay_mask = dfp["_P"].dt.date.between(ms, me)
+                if not pay_mask.any(): 
+                    continue
 
-            # Download
-            st.download_button(
-                "Download CSV – Inactivity snapshot",
-                prev.to_csv(index=False).encode("utf-8"),
-                file_name=f"inactivity_snapshot_{'activity' if pick=='Last Activity Date' else 'connected'}_ge_{thr}d.csv",
-                mime="text/csv",
-            )
+                if component == "same":
+                    subset_idx = pay_mask & (C_per_series == per)
+                else:
+                    subset_idx = pay_mask & (C_per_series <  per)
+
+                if not subset_idx.any(): 
+                    continue
+
+                grp = dfp.loc[subset_idx].groupby("_SRC").size().rename("cnt").reset_index()
+                grp["per"] = per
+                parts.append(grp)
+
+            if not parts:
+                return pd.DataFrame(columns=["_SRC","cnt"])
+
+            dist = pd.concat(parts, ignore_index=True)
+            if weighted and "per" in dist.columns:
+                per_to_w = {p: (i+1) for i, p in enumerate(sorted(months))}
+                dist["w"] = dist["per"].map(per_to_w).fillna(1)
+                dist["wcnt"] = dist["cnt"] * dist["w"]
+                out = dist.groupby("_SRC")["wcnt"].sum().rename("cnt").reset_index()
+            else:
+                out = dist.groupby("_SRC")["cnt"].sum().reset_index()
+            return out
+
+        same_dist = _hist_dist("same")
+        prev_dist = _hist_dist("prev")
+
+        all_srcs = sorted(set(a_by_src["_SRC"]).union(set(same_dist["_SRC"])).union(set(prev_dist["_SRC"])) or {"All"})
+        out = pd.DataFrame({"Source": all_srcs})
+        out = out.merge(a_by_src.rename(columns={"_SRC":"Source"}), on="Source", how="left").fillna({"A_Actual_ToDate":0})
+
+        def _alloc(total, dist_df, fallback_series):
+            if dist_df.empty:
+                weights = fallback_series.copy()
+            else:
+                weights = dist_df.set_index("_SRC")["cnt"].reindex(all_srcs).fillna(0.0)
+            if (weights > 0).any():
+                w = weights / weights.sum()
+            else:
+                if (fallback_series > 0).any():
+                    w = fallback_series / fallback_series.sum()
+                else:
+                    w = pd.Series(1.0/len(all_srcs), index=all_srcs)
+            return (total * w).reindex(all_srcs).values
+
+        fallback = out.set_index("Source")["A_Actual_ToDate"].astype(float)
+        out["B_Remaining_SameMonth"]    = _alloc(B,  same_dist, fallback)
+        out["C_Remaining_PrevMonths"]   = _alloc(C,  prev_dist, fallback)
+        out["Projected_MonthEnd_Total"] = out["A_Actual_ToDate"] + out["B_Remaining_SameMonth"] + out["C_Remaining_PrevMonths"]
+        out = out.sort_values("Projected_MonthEnd_Total", ascending=False)
+
+        # Chart
+        chart_df = out.melt(id_vars=["Source"],
+                            value_vars=["A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths"],
+                            var_name="Component", value_name="Count")
+        st.altair_chart(
+            alt.Chart(chart_df).mark_bar().encode(
+                x=alt.X("Source:N", sort="-y"),
+                y=alt.Y("Count:Q"),
+                color=alt.Color("Component:N"),
+                tooltip=["Source","Component","Count"]
+            ).properties(height=340),
+            use_container_width=True
+        )
+
+        # Table + download
+        with st.expander("Detailed table (by source)"):
+            show_cols = ["Source","A_Actual_ToDate","B_Remaining_SameMonth","C_Remaining_PrevMonths","Projected_MonthEnd_Total"]
+            tbl = out[show_cols].copy()
+            for c in show_cols[1:]:
+                tbl[c] = tbl[c].astype(float).round(3)
+            st.dataframe(tbl, use_container_width=True)
+            st.download_button("Download CSV", tbl.to_csv(index=False).encode("utf-8"),
+                               file_name="predictibility_by_source.csv", mime="text/csv")
+
+        # (Optional) quick sanity
+        with st.expander("Sanity checks"):
+            st.write({
+                "Create col": _create, "Payment col": _pay, "Source col": _src or "All",
+                "A_rows_mtd": A, "days_left": days_left,
+                "daily_same_hist": round(daily_same, 3), "daily_prev_hist": round(daily_prev, 3),
+                "lookback": lookback, "weighted": weighted,
+            })
