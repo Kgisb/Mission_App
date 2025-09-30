@@ -4653,3 +4653,269 @@ elif view == "Heatmap":
 
     # run the tab
     _heatmap_tab()
+# =========================
+# Bubble Explorer Tab
+# =========================
+elif view == "Bubble Explorer":
+    def _bubble_explorer():
+        st.subheader("Bubble Explorer — Country × Deal Source (MTD / Cohort)")
+
+        # ---------- Resolve key columns (defensive) ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+        _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
+        _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cty    = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+
+        # Calibration columns (optional)
+        _first_cal = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
+        _resched   = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
+        _done      = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
+
+        if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
+            st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
+            st.stop()
+        if not _src or _src not in df_f.columns or not _cty or _cty not in df_f.columns:
+            st.warning("Need both Country and JetLearn Deal Source columns to build the bubble view.", icon="⚠️")
+            st.stop()
+
+        # ---------- Mode + Time window ("seek bar") ----------
+        col_top1, col_top2, col_top3 = st.columns([1.0, 1.2, 1.3])
+        with col_top1:
+            mode = st.radio(
+                "Mode",
+                ["MTD", "Cohort"],
+                index=1,
+                horizontal=True,
+                help=("MTD: Enrolments/events counted only if the deal was also created in the window. "
+                      "Cohort: Enrolments/events counted by their own date regardless of create month.")
+            )
+        with col_top2:
+            time_preset = st.selectbox(
+                "Time window",
+                ["Last month", "Last 3 months", "Last 12 months", "Custom"],
+                index=1,
+                help="Quick ranges (inclusive). Use Custom for any date span."
+            )
+        with col_top3:
+            # axis choices & metric configuration
+            size_metric = st.selectbox(
+                "Bubble size by",
+                ["Enrolments", "Deals Created", "First Calibration Scheduled — Count", "Calibration Rescheduled — Count", "Calibration Done — Count"],
+                index=0,
+                help="Determines relative bubble size."
+            )
+
+        today_d = date.today()
+        if time_preset == "Last month":
+            start_d, end_d = last_month_bounds(today_d)
+        elif time_preset == "Last 3 months":
+            # from the 1st of (today - 2 months) to end of current month
+            mstart, _ = month_bounds(today_d)
+            start_d = (mstart - pd.offsets.MonthBegin(2)).date()  # first day 2 months before current month
+            end_d   = month_bounds(today_d)[1]
+        elif time_preset == "Last 12 months":
+            mstart, _ = month_bounds(today_d)
+            start_d = (mstart - pd.offsets.MonthBegin(11)).date()  # first day 11 months before current month
+            end_d   = month_bounds(today_d)[1]
+        else:
+            d1, d2 = st.columns(2)
+            with d1: start_d = st.date_input("Start date", value=today_d.replace(day=1), key="bx_start")
+            with d2: end_d   = st.date_input("End date",   value=month_bounds(today_d)[1], key="bx_end")
+            if end_d < start_d:
+                st.error("End date cannot be before start date.")
+                st.stop()
+
+        st.caption(f"Scope: **{start_d} → {end_d}** • Mode: **{mode}**")
+
+        # ---------- Filters (multi-select with 'All') ----------
+        def norm_cat(series):
+            return series.fillna("Unknown").astype(str).str.strip()
+
+        X_src = norm_cat(df_f[_src])
+        Y_cty = norm_cat(df_f[_cty])
+
+        src_all = sorted(X_src.unique().tolist())
+        cty_all = sorted(Y_cty.unique().tolist())
+
+        f1, f2, f3, f4 = st.columns([1.4, 1.4, 1.2, 1.0])
+        with f1:
+            src_pick = st.multiselect("Filter JetLearn Deal Source", options=["All"] + src_all, default=["All"], help="Choose one or more. 'All' selects everything.")
+        with f2:
+            cty_pick = st.multiselect("Filter Country", options=["All"] + cty_all, default=["All"], help="Choose one or more. 'All' selects everything.")
+        with f3:
+            agg_cty = st.toggle("Aggregate selected Countries", value=False, help="Combine selected countries into a single bubble group.")
+        with f4:
+            agg_src = st.toggle("Aggregate selected Sources", value=False, help="Combine selected sources into a single bubble group.")
+
+        if "All" in src_pick:
+            src_pick = src_all
+        if "All" in cty_pick:
+            cty_pick = cty_all
+
+        # ---------- Normalize dates & masks ----------
+        C = coerce_datetime(df_f[_create]).dt.date
+        P = coerce_datetime(df_f[_pay]).dt.date
+        F = coerce_datetime(df_f[_first_cal]).dt.date if _first_cal and _first_cal in df_f.columns else None
+        R = coerce_datetime(df_f[_resched]).dt.date   if _resched   and _resched   in df_f.columns else None
+        D = coerce_datetime(df_f[_done]).dt.date      if _done      and _done      in df_f.columns else None
+
+        def between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
+
+        mask_created = between_date(C, start_d, end_d)
+        mask_paid    = between_date(P, start_d, end_d)
+        enrol_mask   = (mask_created & mask_paid) if mode == "MTD" else mask_paid
+
+        first_mask = None
+        if F is not None:
+            f_in = between_date(F, start_d, end_d)
+            first_mask = (mask_created & f_in) if mode == "MTD" else f_in
+
+        resched_mask = None
+        if R is not None:
+            r_in = between_date(R, start_d, end_d)
+            resched_mask = (mask_created & r_in) if mode == "MTD" else r_in
+
+        done_mask = None
+        if D is not None:
+            d_in = between_date(D, start_d, end_d)
+            done_mask = (mask_created & d_in) if mode == "MTD" else d_in
+
+        base_mask = X_src.isin(src_pick) & Y_cty.isin(cty_pick)
+
+        # ---------- Group keys (with optional aggregation) ----------
+        if agg_cty and agg_src:
+            gx = pd.Series("Selected Sources", index=df_f.index)
+            gy = pd.Series("Selected Countries", index=df_f.index)
+        elif agg_cty:
+            gx = X_src.copy()
+            gy = pd.Series("Selected Countries", index=df_f.index)
+        elif agg_src:
+            gx = pd.Series("Selected Sources", index=df_f.index)
+            gy = Y_cty.copy()
+        else:
+            gx = X_src.copy()
+            gy = Y_cty.copy()
+
+        # ---------- Build counts ----------
+        def _group_sum(active_mask, name):
+            if active_mask is None or not active_mask.any():
+                return pd.DataFrame(columns=["Source","Country",name])
+            df_tmp = pd.DataFrame({"Source": gx[base_mask & active_mask], "Country": gy[base_mask & active_mask]})
+            if df_tmp.empty:
+                return pd.DataFrame(columns=["Source","Country",name])
+            return (
+                df_tmp.assign(_one=1)
+                      .groupby(["Source","Country"], dropna=False)["_one"].sum()
+                      .rename(name)
+                      .reset_index()
+            )
+
+        created_ct = _group_sum(mask_created, "Deals Created")
+        enrol_ct   = _group_sum(enrol_mask,   "Enrolments")
+        first_ct   = _group_sum(first_mask,   "First Calibration Scheduled — Count")
+        resch_ct   = _group_sum(resched_mask, "Calibration Rescheduled — Count")
+        done_ct    = _group_sum(done_mask,    "Calibration Done — Count")
+
+        bub = created_ct.merge(enrol_ct, on=["Source","Country"], how="outer")
+        bub = bub.merge(first_ct, on=["Source","Country"], how="outer")
+        bub = bub.merge(resch_ct, on=["Source","Country"], how="outer")
+        bub = bub.merge(done_ct, on=["Source","Country"], how="outer")
+
+        for coln in ["Deals Created","Enrolments","First Calibration Scheduled — Count","Calibration Rescheduled — Count","Calibration Done — Count"]:
+            if coln not in bub.columns: bub[coln] = 0
+        bub = bub.fillna(0)
+        for coln in ["Deals Created","Enrolments","First Calibration Scheduled — Count","Calibration Rescheduled — Count","Calibration Done — Count"]:
+            bub[coln] = bub[coln].astype(int)
+
+        # ---------- Chart configuration ----------
+        c1, c2, c3 = st.columns([1.0, 1.0, 0.9])
+        with c1:
+            x_axis = st.selectbox("X axis", ["Country","JetLearn Deal Source"], index=0, help="Pick which dimension goes on X.")
+        with c2:
+            y_axis = st.selectbox("Y axis", ["JetLearn Deal Source","Country"], index=0 if x_axis=="JetLearn Deal Source" else 1, help="Pick which dimension goes on Y.")
+        with c3:
+            color_metric = st.selectbox(
+                "Bubble color by",
+                ["Enrolments", "Deals Created", "First Calibration Scheduled — Count", "Calibration Rescheduled — Count", "Calibration Done — Count"],
+                index=1,
+                help="Color encodes another metric for the same bubble."
+            )
+
+        # Ensure x/y refer to right columns in `bub`
+        if x_axis == "Country":
+            bub["X"] = bub["Country"]
+            bub["Y"] = bub["Source"]
+            x_title, y_title = "Country", "JetLearn Deal Source"
+        else:
+            bub["X"] = bub["Source"]
+            bub["Y"] = bub["Country"]
+            x_title, y_title = "JetLearn Deal Source", "Country"
+
+        # ---------- Optional Top N limiter ----------
+        tcol1, tcol2 = st.columns([1.0, 0.9])
+        with tcol1:
+            top_n = st.number_input("Top N bubbles by size metric (0 = all)", min_value=0, max_value=500, value=0, step=1)
+        with tcol2:
+            view_mode = st.radio("View as", ["Graph", "Table"], index=0, horizontal=True)
+
+        size_field = size_metric
+        color_field = color_metric
+
+        # Sort and trim by chosen size metric
+        bub_view = bub.copy()
+        if top_n and top_n > 0:
+            bub_view = bub_view.sort_values(size_field, ascending=False).head(top_n)
+
+        if bub_view.empty:
+            st.info("No data for the chosen filters/date range.")
+            return
+
+        # ---------- Render ----------
+        if view_mode == "Graph":
+            # altair bubble chart
+            # scale bubble size for readability
+            max_size_val = max(1, bub_view[size_field].max())
+            size_scale = alt.Scale(range=[30, 1500])  # adjust visual range
+
+            chart = (
+                alt.Chart(bub_view)
+                .mark_circle(opacity=0.7)
+                .encode(
+                    x=alt.X("X:N", title=x_title, sort=sorted(bub_view["X"].unique().tolist())),
+                    y=alt.Y("Y:N", title=y_title, sort=sorted(bub_view["Y"].unique().tolist())),
+                    size=alt.Size(f"{size_field}:Q", scale=size_scale, title=f"Size: {size_field}"),
+                    color=alt.Color(f"{color_field}:Q", title=f"Color: {color_field}"),
+                    tooltip=[
+                        alt.Tooltip("Country:N"),
+                        alt.Tooltip("Source:N", title="JetLearn Deal Source"),
+                        alt.Tooltip("Deals Created:Q"),
+                        alt.Tooltip("First Calibration Scheduled — Count:Q"),
+                        alt.Tooltip("Calibration Rescheduled — Count:Q"),
+                        alt.Tooltip("Calibration Done — Count:Q"),
+                        alt.Tooltip("Enrolments:Q"),
+                    ],
+                )
+                .properties(height=520, title=f"Bubble view • Size: {size_field} • Color: {color_field} • Mode: {mode}")
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.dataframe(bub_view.sort_values([size_field, color_field], ascending=[False, False]), use_container_width=True)
+            st.download_button(
+                "Download CSV — Bubble Explorer data",
+                bub_view.to_csv(index=False).encode("utf-8"),
+                "bubble_explorer_data.csv",
+                "text/csv",
+                key="bx_dl"
+            )
+
+        # ---------- Notes about missing columns ----------
+        missing = []
+        if _first_cal is None or _first_cal not in df_f.columns: missing.append("First Calibration Scheduled Date")
+        if _resched   is None or _resched   not in df_f.columns: missing.append("Calibration Rescheduled Date")
+        if _done      is None or _done      not in df_f.columns: missing.append("Calibration Done Date")
+        if missing:
+            st.info("Missing columns: " + ", ".join(missing) + ". These counts show as 0.", icon="ℹ️")
+
+    # run the tab
+    _bubble_explorer()
