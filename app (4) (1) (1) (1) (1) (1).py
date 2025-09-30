@@ -4968,143 +4968,208 @@ elif view == "Bubble Explorer":
     # run the tab
     _bubble_explorer()
 # =========================
-# Deal Decay Tab (end-to-end)
+# Deal Decay Tab (full)
 # =========================
 elif view == "Deal Decay":
     def _deal_decay_tab():
-        st.subheader("Deal Decay — Time Between Funnel Stages (MTD / Cohort)")
+        st.subheader("Deal Decay — Time Between Key Stages (MTD / Cohort)")
 
-        # -------- Resolve core columns (defensive) --------
-        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
-        _pay    = pay_col    if (pay_col    in df_f.columns) else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
-        _first  = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
-        _resch  = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
-        _done   = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
+        # ---------- Resolve columns (defensive) ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, [
+            "Create Date","Created Date","Deal Create Date","CreateDate"
+        ])
+        _pay    = pay_col    if (pay_col    in df_f.columns) else find_col(df_f, [
+            "Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"
+        ])
+        _first  = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, [
+            "First Calibration Scheduled Date","First Calibration","First Cal Scheduled"
+        ])
+        _resch  = cal_resched_col if (cal_resched_col in df_f.columns) else find_col(df_f, [
+            "Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"
+        ])
+        _done   = cal_done_col if (cal_done_col in df_f.columns) else find_col(df_f, [
+            "Calibration Done Date","Cal Done Date","Calibration Completed"
+        ])
 
-        _cty = country_col     if (country_col     in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
-        _src = source_col      if (source_col      in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
-        _cns = counsellor_col  if (counsellor_col  in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
+        # Optional dimensional filters
+        _cty = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+        _src = source_col  if (source_col  in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cns = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
 
-        if not _create or not _pay:
-            st.warning("Create/Payment columns are required. Please map 'Create Date' and 'Payment Received Date'.", icon="⚠️")
+        # Need at least Create + one other event to be meaningful
+        core_missing = []
+        if not _create or _create not in df_f.columns: core_missing.append("Create Date")
+        if not _pay or _pay not in df_f.columns:       core_missing.append("Payment Received Date")
+        if core_missing:
+            st.warning("Missing columns: " + ", ".join(core_missing) + ". Please map them in the sidebar.", icon="⚠️")
             return
 
-        # -------- Event choices (From ➜ To) --------
-        event_map = {
-            "Created": _create,
-            "First Calibration Scheduled": _first,
-            "Calibration Rescheduled": _resch,
-            "Calibration Done": _done,
-            "Enrolled (Payment)": _pay,
-        }
+        # ---------- Controls ----------
+        col_top1, col_top2, col_top3 = st.columns([1.2, 1.2, 1])
+        with col_top1:
+            mode = st.radio(
+                "Mode",
+                ["MTD", "Cohort"],
+                index=1, horizontal=True, key="dd_mode",
+                help=("MTD: keep pairs only if the DEAL WAS CREATED in the date window. "
+                      "Cohort: keep pairs if the TO-event is in the window (create can be anywhere).")
+            )
+        with col_top2:
+            scope = st.radio(
+                "Date scope",
+                ["This month", "Last month", "Custom"],
+                index=0, horizontal=True, key="dd_dscope"
+            )
+        with col_top3:
+            mom_trailing = st.selectbox("MoM trailing (months)", [3, 6, 12], index=1, key="dd_momh")
 
-        cA, cB, cC = st.columns([1.0, 1.0, 1.2])
-        with cA:
-            mode = st.radio("Mode", ["MTD", "Cohort"], index=1, horizontal=True, key="dd_mode",
-                            help=("MTD: include only deals created in window; Cohort: include rows by the TO event in window."))
-        with cB:
-            scope = st.radio("Date scope", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="dd_scope")
-        with cC:
-            mom_trailing = st.selectbox("MoM trailing (months)", [3, 6, 12], index=1, key="dd_trailing",
-                                        help="Used for the month-on-month trend chart below.")
-
-        # Date window
         today_d = date.today()
         if scope == "This month":
             range_start, range_end = month_bounds(today_d)
         elif scope == "Last month":
             range_start, range_end = last_month_bounds(today_d)
         else:
-            d1, d2 = st.columns(2)
-            with d1: range_start = st.date_input("Start date", value=today_d.replace(day=1), key="dd_start")
-            with d2: range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="dd_end")
+            c1, c2 = st.columns(2)
+            with c1: range_start = st.date_input("Start date", value=today_d.replace(day=1), key="dd_start")
+            with c2: range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="dd_end")
             if range_end < range_start:
                 st.error("End date cannot be before start date.")
                 return
         st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
 
-        # -------- Breakdown filters (multi-select with “All”) --------
-        def norm_cat(s):
-            return s.fillna("Unknown").astype(str).str.strip()
-
-        filters = {}
-        fl1, fl2, fl3 = st.columns([1.2, 1.2, 1.2])
-        with fl1:
-            if _cty:
-                c_vals = ["All"] + sorted(norm_cat(df_f[_cty]).unique().tolist())
-                pick_cty = st.multiselect("Filter Country", c_vals, default=["All"], key="dd_cty")
-                filters["Country"] = ( _cty, None if "All" in pick_cty else pick_cty )
-        with fl2:
-            if _src:
-                s_vals = ["All"] + sorted(norm_cat(df_f[_src]).unique().tolist())
-                pick_src = st.multiselect("Filter JetLearn Deal Source", s_vals, default=["All"], key="dd_src")
-                filters["Deal Source"] = ( _src, None if "All" in pick_src else pick_src )
-        with fl3:
-            if _cns:
-                a_vals = ["All"] + sorted(norm_cat(df_f[_cns]).unique().tolist())
-                pick_cns = st.multiselect("Filter Academic Counsellor", a_vals, default=["All"], key="dd_cns")
-                filters["Counsellor"] = ( _cns, None if "All" in pick_cns else pick_cns )
-
-        # -------- From–To selector --------
-        ev1, ev2 = st.columns(2)
-        with ev1:
-            from_ev = st.selectbox("From event", list(event_map.keys()), index=0, key="dd_from")
-        with ev2:
-            to_choices = [k for k in event_map.keys() if k != from_ev]
-            to_ev = st.selectbox("To event", to_choices, index=to_choices.index("Enrolled (Payment)") if "Enrolled (Payment)" in to_choices else 0, key="dd_to")
-
-        # -------- Build working DF + normalize dates (keep as datetime64[ns]) --------
-        d = df_f.copy()
-        for label, col in event_map.items():
-            if col and col in d.columns:
-                # normalize to midnight but KEEP datetime64[ns]; don't convert to .dt.date
-                d[f"__{label}"] = coerce_datetime(d[col]).dt.normalize()
-            else:
-                d[f"__{label}"] = pd.NaT
-
-        # Apply filters
-        for label, (colname, picks) in filters.items():
-            if colname and colname in d.columns and picks is not None:
-                d = d[norm_cat(d[colname]).isin(picks)]
-
-        # Window masks helpers
-        def between_dt(s, a, b):
-            # convert range_start/end (date) to Timestamps for comparison with datetime64[ns]
-            a_ts = pd.Timestamp(a)
-            b_ts = pd.Timestamp(b)
-            return s.notna() & (s >= a_ts) & (s <= b_ts)
-
-        mask_created = between_dt(d["__Created"], range_start, range_end)
-        mask_to      = between_dt(d[f"__{to_ev}"], range_start, range_end)
-
-        # Population filter by mode:
-        if mode == "MTD":
-            pop_mask = mask_created
-        else:
-            pop_mask = mask_to
-
-        # Need both dates present & valid ordering for duration
-        valid_pair = d[f"__{from_ev}"].notna() & d[f"__{to_ev}"].notna() & (d[f"__{to_ev}"] >= d[f"__{from_ev}"])
-        d_use = d.loc[pop_mask & valid_pair].copy()
-
-        if d_use.empty:
-            st.info("No rows match the chosen filters, mode, and date window for computing decay.", icon="ℹ️")
+        # Event picker (FROM → TO)
+        events_map = {
+            "Deal Created": _create,
+            "First Calibration Scheduled": _first,
+            "Calibration Rescheduled": _resch,
+            "Calibration Done": _done,
+            "Enrolment (Payment Received)": _pay,
+        }
+        # Only show available events
+        avail_events = [k for k,v in events_map.items() if v and v in df_f.columns]
+        if "Deal Created" not in avail_events:
+            # we still allow picking pairs not involving create, but warn
+            st.info("‘Deal Created’ not found; you can still compare other event pairs if both columns exist.")
+        if len(avail_events) < 2:
+            st.warning("Need at least two event columns to compute a decay.", icon="⚠️")
             return
 
-        # Duration in days (now safe: timedeltas)
-        d_use["__days"] = (d_use[f"__{to_ev}"] - d_use[f"__{from_ev}"]).dt.days.astype(int)
+        e1, e2, e3 = st.columns([1.2, 1.2, 1.0])
+        with e1:
+            from_ev = st.selectbox("From event", avail_events, index=max(0, avail_events.index("Deal Created")) if "Deal Created" in avail_events else 0, key="dd_from")
+        with e2:
+            to_choices = [e for e in avail_events if e != from_ev]
+            to_ev = st.selectbox("To event", to_choices, index=min(1, len(to_choices)-1), key="dd_to")
+        with e3:
+            out_pref = st.radio("Output", ["Bell curve", "Table"], index=0, horizontal=True, key="dd_outpref")
 
-        # -------- KPI: mu & sigma --------
-        mu  = float(d_use["__days"].mean())
-        sig = float(d_use["__days"].std(ddof=1)) if len(d_use) > 1 else 0.0
-        p50 = float(d_use["__days"].median())
-        p90 = float(np.percentile(d_use["__days"], 90)) if len(d_use) > 0 else np.nan
-        n   = int(len(d_use))
+        # Dimensional filters
+        st.markdown("#### Filters")
+        f1, f2, f3 = st.columns([1.4, 1.4, 1.4])
+        def _opts(series):
+            vals = sorted(series.fillna("Unknown").astype(str).unique().tolist())
+            return ["All"] + vals, ["All"]
+
+        if _cty:
+            cty_series = df_f[_cty].fillna("Unknown").astype(str)
+            cty_opts, cty_def = _opts(cty_series)
+            with f1:
+                pick_cty = st.multiselect("Country", options=cty_opts, default=cty_def, key="dd_cty")
+        else:
+            pick_cty = None
+
+        if _src:
+            src_series = df_f[_src].fillna("Unknown").astype(str)
+            src_opts, src_def = _opts(src_series)
+            with f2:
+                pick_src = st.multiselect("JetLearn Deal Source", options=src_opts, default=src_def, key="dd_src")
+        else:
+            pick_src = None
+
+        if _cns:
+            cns_series = df_f[_cns].fillna("Unknown").astype(str)
+            cns_opts, cns_def = _opts(cns_series)
+            with f3:
+                pick_cns = st.multiselect("Academic Counsellor", options=cns_opts, default=cns_def, key="dd_cns")
+        else:
+            pick_cns = None
+
+        # ---------- Normalize timestamps safely ----------
+        def _to_dt(s):
+            # Always return datetime64[ns]; invalid -> NaT
+            return coerce_datetime(s)
+
+        df_use = df_f.copy()
+        df_use["__Deal Created"]                 = _to_dt(df_use[events_map["Deal Created"]]) if "Deal Created" in events_map and events_map["Deal Created"] else pd.NaT
+        if "First Calibration Scheduled" in events_map:
+            df_use["__First Calibration Scheduled"] = _to_dt(df_use[events_map["First Calibration Scheduled"]])
+        if "Calibration Rescheduled" in events_map:
+            df_use["__Calibration Rescheduled"]     = _to_dt(df_use[events_map["Calibration Rescheduled"]])
+        if "Calibration Done" in events_map:
+            df_use["__Calibration Done"]            = _to_dt(df_use[events_map["Calibration Done"]])
+        df_use["__Enrolment (Payment Received)"] = _to_dt(df_use[events_map["Enrolment (Payment Received)"]]) if "Enrolment (Payment Received)" in events_map else pd.NaT
+
+        # Helper masks for date window
+        def _between_dt(sdt, a, b):
+            # sdt is datetime64[ns] series
+            if sdt is None:
+                return pd.Series(False, index=df_use.index)
+            return sdt.notna() & (sdt.dt.date >= a) & (sdt.dt.date <= b)
+
+        mask_created_in_win = _between_dt(df_use["__Deal Created"] if "__Deal Created" in df_use.columns else None, range_start, range_end)
+        mask_to_in_win      = _between_dt(df_use[f"__{to_ev}"], range_start, range_end)
+
+        # Base pair mask: both FROM and TO exist and TO >= FROM
+        base_pair = df_use[f"__{from_ev}"].notna() & df_use[f"__{to_ev}"].notna()
+        # keep only non-negative differences (TO on/after FROM)
+        nonneg = base_pair & (df_use[f"__{to_ev}"] >= df_use[f"__{from_ev}"])
+
+        # Mode logic
+        if mode == "MTD":
+            # only deals whose Create Date is in the window
+            keep_mode = nonneg & mask_created_in_win
+        else:
+            # Cohort: pairs where the TO-event is in the window
+            keep_mode = nonneg & mask_to_in_win
+
+        # Dimensional filters
+        if pick_cty is not None:
+            if "All" not in pick_cty:
+                keep_mode &= df_use[_cty].fillna("Unknown").astype(str).isin(pick_cty)
+        if pick_src is not None:
+            if "All" not in pick_src:
+                keep_mode &= df_use[_src].fillna("Unknown").astype(str).isin(pick_src)
+        if pick_cns is not None:
+            if "All" not in pick_cns:
+                keep_mode &= df_use[_cns].fillna("Unknown").astype(str).isin(pick_cns)
+
+        d_use = df_use.loc[keep_mode, [f"__{from_ev}", f"__{to_ev}"]].copy()
+        if d_use.empty:
+            st.info("No matching pairs for the selected events/filters/date window.")
+            return
+
+        # Compute days (safe for older pandas): ensure datetime, then (to - from).dt.days
+        # .dt accessor is valid because columns are datetime64[ns] from coerce_datetime
+        d_use["__days"] = (d_use[f"__{to_ev}"] - d_use[f"__{from_ev}"]).dt.days
+        # Drop negative/NaN just in case
+        d_use = d_use[d_use["__days"].notna() & (d_use["__days"] >= 0)].copy()
+        if d_use.empty:
+            st.info("All matched rows had invalid or negative durations.")
+            return
+
+        # ---------- KPIs ----------
+        mu   = float(d_use["__days"].mean())
+        med  = float(d_use["__days"].median())
+        std  = float(d_use["__days"].std(ddof=1)) if len(d_use) > 1 else 0.0
+        p90  = float(d_use["__days"].quantile(0.90))
+        mn   = int(d_use["__days"].min())
+        mx   = int(d_use["__days"].max())
+        nobs = int(len(d_use))
 
         st.markdown(
             """
             <style>
-              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #fff; }
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
               .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
               .kpi-value { font-size: 1.4rem; font-weight: 700; }
               .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
@@ -5112,89 +5177,79 @@ elif view == "Deal Decay":
             """,
             unsafe_allow_html=True
         )
-        c1, c2, c3, c4, c5 = st.columns(5)
-        with c1:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>μ (avg days)</div><div class='kpi-value'>{mu:.1f}</div><div class='kpi-sub'>{from_ev} → {to_ev}</div></div>", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>σ (std dev)</div><div class='kpi-value'>{sig:.1f}</div><div class='kpi-sub'>n = {n}</div></div>", unsafe_allow_html=True)
-        with c3:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Median (P50)</div><div class='kpi-value'>{p50:.0f}</div><div class='kpi-sub'>days</div></div>", unsafe_allow_html=True)
-        with c4:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>P90</div><div class='kpi-value'>{p90:.0f}</div><div class='kpi-sub'>days</div></div>", unsafe_allow_html=True)
-        with c5:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Count</div><div class='kpi-value'>{n:,}</div><div class='kpi-sub'>rows</div></div>", unsafe_allow_html=True)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        with c1: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Mean (μ)</div><div class='kpi-value'>{mu:.1f} d</div><div class='kpi-sub'>n={nobs:,}</div></div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Std Dev (σ)</div><div class='kpi-value'>{std:.1f} d</div><div class='kpi-sub'>min {mn} • max {mx}</div></div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Median</div><div class='kpi-value'>{med:.1f} d</div><div class='kpi-sub'>p90 {p90:.1f} d</div></div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Pairs kept</div><div class='kpi-value'>{nobs:,}</div><div class='kpi-sub'>{from_ev} → {to_ev}</div></div>", unsafe_allow_html=True)
+        with c5: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Mode</div><div class='kpi-value'>{mode}</div><div class='kpi-sub'>{range_start} → {range_end}</div></div>", unsafe_allow_html=True)
+        with c6: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Scope</div><div class='kpi-value'>{scope}</div><div class='kpi-sub'>Date window</div></div>", unsafe_allow_html=True)
 
-        st.markdown("---")
-
-        # -------- Bell curve / Histogram / Table toggle --------
-        view_mode = st.radio("Distribution view", ["Bell curve", "Histogram", "Table"], index=0, horizontal=True, key="dd_view")
-
-        # Prepare data for charts
-        dist_df = d_use[["__days"]].rename(columns={"__days": "Days"})
-
-        if view_mode == "Table":
-            st.dataframe(dist_df.sort_values("Days"), use_container_width=True)
-            st.download_button(
-                "Download CSV — Durations",
-                dist_df.to_csv(index=False).encode("utf-8"),
-                "deal_decay_durations.csv", "text/csv", key="dd_dl1"
-            )
-        elif view_mode == "Histogram":
-            bw = st.slider("Bin width (days)", min_value=1, max_value=60, value=7, step=1, key="dd_bw")
-            ch = (
-                alt.Chart(dist_df)
-                .mark_bar(opacity=0.9)
+        # ---------- Visualization / Table ----------
+        if out_pref == "Bell curve":
+            # Histogram + (optional) density estimate (Altair transform_density)
+            hist = (
+                alt.Chart(d_use.rename(columns={"__days":"Days"}))
+                .mark_bar(opacity=0.8)
                 .encode(
-                    x=alt.X("Days:Q", bin=alt.Bin(step=bw), title="Days"),
+                    x=alt.X("Days:Q", bin=alt.Bin(maxbins=40), title="Days between events"),
                     y=alt.Y("count():Q", title="Count"),
                     tooltip=[alt.Tooltip("count():Q", title="Count")]
                 )
-                .properties(height=320, title=f"Histogram — {from_ev} → {to_ev}")
+                .properties(height=320, title=f"Distribution of Days — {from_ev} → {to_ev}")
             )
-            mean_rule = alt.Chart(pd.DataFrame({"mu":[mu]})).mark_rule().encode(x="mu:Q")
-            st.altair_chart(ch + mean_rule, use_container_width=True)
-        else:
-            ch = (
-                alt.Chart(dist_df)
+
+            dens = (
+                alt.Chart(d_use.rename(columns={"__days":"Days"}))
                 .transform_density(
-                    "Days",
-                    as_=["Days","Density"],
-                    extent=[max(0, float(dist_df["Days"].min())), float(dist_df["Days"].max())],
-                    steps=200
+                    "Days", as_=["Days", "Density"], extent=[max(0, mn), mx], steps=200
                 )
-                .mark_area(opacity=0.5)
+                .mark_line()
                 .encode(
-                    x=alt.X("Days:Q", title="Days"),
+                    x="Days:Q",
                     y=alt.Y("Density:Q", title="Density"),
-                    tooltip=[alt.Tooltip("Days:Q", format=".0f"), alt.Tooltip("Density:Q", format=".4f")]
+                    tooltip=[alt.Tooltip("Days:Q"), alt.Tooltip("Density:Q", format=".3f")]
                 )
-                .properties(height=320, title=f"Bell Curve — {from_ev} → {to_ev}")
             )
-            mean_rule = alt.Chart(pd.DataFrame({"mu":[mu]})).mark_rule(color="red").encode(x="mu:Q")
-            st.altair_chart(ch + mean_rule, use_container_width=True)
+            st.altair_chart(hist + dens, use_container_width=True)
+        else:
+            show = d_use.copy()
+            show["Days"] = show["__days"].astype(int)
+            show = show[["Days"]]
+            st.dataframe(show, use_container_width=True)
+            st.download_button(
+                "Download CSV — Durations",
+                show.to_csv(index=False).encode("utf-8"),
+                "deal_decay_durations.csv", "text/csv",
+                key="dd_dl_table"
+            )
 
-        st.markdown("---")
-
-        # -------- Month-on-Month trend of average days --------
+        # ---------- Month-on-Month trend of average days ----------
         st.markdown("### Month-on-Month — Average Days")
-        to_month = d_use[f"__{to_ev}"].dt.to_period("M")
+        # To-month series for the kept rows
+        kept_to = df_use.loc[keep_mode, f"__{to_ev}"]
+        to_month = kept_to.dt.to_period("M")
+
         end_month = pd.Period(pd.Timestamp(range_end).normalize(), freq="M")
         months = pd.period_range(end=end_month, periods=mom_trailing, freq="M")
+
         trend = (
-            d_use.assign(_m=to_month)
-                 .loc[lambda x: x["_m"].isin(months)]
-                 .groupby("_m")["__days"].mean()
-                 .reindex(months, fill_value=np.nan)
-                 .reset_index(names="Month")
-                 .rename(columns={"__days":"AvgDays"})
+            d_use.assign(_m=to_month.loc[d_use.index])  # align index
+                .loc[lambda x: x["_m"].isin(months)]
+                .groupby("_m")["__days"].mean()
+                .reindex(months, fill_value=np.nan)
         )
+        # Older pandas: avoid names=...; rename after reset
+        trend = trend.reset_index()
+        trend.columns = ["Month", "AvgDays"]
         trend["Month"] = trend["Month"].astype(str)
+        months_order = trend["Month"].tolist()
 
         ch_trend = (
             alt.Chart(trend)
             .mark_line(point=True)
             .encode(
-                x=alt.X("Month:N", sort=trend["Month"].tolist()),
+                x=alt.X("Month:N", sort=months_order),
                 y=alt.Y("AvgDays:Q", title="Average Days"),
                 tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("AvgDays:Q", format=".1f")]
             )
@@ -5202,29 +5257,6 @@ elif view == "Deal Decay":
         )
         st.altair_chart(ch_trend, use_container_width=True)
 
-        # -------- Optional breakdown table by Country / Source / Counsellor --------
-        st.markdown("### Breakdown (mean / std / n)")
-        by = st.selectbox("Group by", [opt for opt in [("Country", _cty), ("Deal Source", _src), ("Counsellor", _cns)] if opt[1]], format_func=lambda x: x[0], key="dd_groupby")
-        if by:
-            label, coln = by
-            grp = (
-                d_use.assign(_g=norm_cat(d_use[coln]))
-                    .groupby("_g")["__days"]
-                    .agg(Count="count", Mean="mean", Std=lambda s: s.std(ddof=1) if len(s)>1 else 0.0, P50="median", P90=lambda s: np.percentile(s, 90) if len(s)>0 else np.nan)
-                    .reset_index()
-                    .rename(columns={"_g":label})
-                    .sort_values("Count", ascending=False)
-            )
-            grp["Mean"] = grp["Mean"].round(1)
-            grp["Std"]  = grp["Std"].round(1)
-            grp["P50"]  = grp["P50"].round(0)
-            grp["P90"]  = grp["P90"].round(0)
-            st.dataframe(grp, use_container_width=True)
-            st.download_button(
-                "Download CSV — Breakdown",
-                grp.to_csv(index=False).encode("utf-8"),
-                "deal_decay_breakdown.csv", "text/csv", key="dd_dl2"
-            )
-
     # run the tab
     _deal_decay_tab()
+
