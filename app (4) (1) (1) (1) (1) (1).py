@@ -167,7 +167,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "Predictibility", "Referrals", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement"],  # ← add this
+        ["Dashboard", "MIS", "Predictibility", "Referrals", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement", "Heatmap"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -4249,3 +4249,247 @@ elif view == "Referrals":
                 st.info("No referral enrolments found in the selected MoM window to split by ‘Sibling Deal’.")
     # call the tab
     _referrals_tab()
+# =========================
+# Heatmap Tab (full)
+# =========================
+elif view == "Heatmap":
+    def _heatmap_tab():
+        st.subheader("Heatmap — Interactive Crosstab (MTD / Cohort)")
+
+        # ---------- Resolve key columns (defensive) ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+        _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
+        _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cty    = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+        _cns    = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
+        _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
+        _sib    = find_col(df_f, ["Sibling Deal","Sibling deal","Sibling"])
+
+        if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
+            st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
+            return
+
+        # ---------- Mode + Date scope ----------
+        col_top1, col_top2 = st.columns([1.1, 1.4])
+        with col_top1:
+            mode = st.radio("Mode", ["MTD", "Cohort"], index=1, horizontal=True, key="hm_mode",
+                            help=("MTD: Enrolments counted only if the deal was also created in the window. "
+                                  "Cohort: Enrolments counted by payment date regardless of create month."))
+        with col_top2:
+            scope = st.radio("Date scope", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="hm_dscope")
+
+        today_d = date.today()
+        if scope == "This month":
+            range_start, range_end = month_bounds(today_d)
+        elif scope == "Last month":
+            range_start, range_end = last_month_bounds(today_d)
+        else:
+            d1, d2 = st.columns(2)
+            with d1: range_start = st.date_input("Start date", value=today_d.replace(day=1), key="hm_start")
+            with d2: range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="hm_end")
+            if range_end < range_start:
+                st.error("End date cannot be before start date.")
+                return
+        st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
+
+        # ---------- Dimension picker ----------
+        # Build the pool of available dimensions (label -> column name)
+        dim_options = {}
+        if _src: dim_options["JetLearn Deal Source"] = _src
+        if _cty: dim_options["Country"] = _cty
+        if _cns: dim_options["Academic Counsellor"] = _cns
+        if _ris: dim_options["Referral Intent Source"] = _ris
+        if _sib: dim_options["Sibling Deal"] = _sib
+
+        if len(dim_options) < 2:
+            st.info("Need at least two categorical columns (e.g., Deal Source and Country) to draw a heatmap.")
+            return
+
+        c1, c2, c3 = st.columns([1.2, 1.2, 1.1])
+        with c1:
+            x_label = st.selectbox("X axis (categories)", list(dim_options.keys()), index=0, key="hm_x")
+        with c2:
+            # pick a different default for Y
+            y_keys = [k for k in dim_options.keys() if k != x_label]
+            y_label = st.selectbox("Y axis (categories)", y_keys, index=0, key="hm_y")
+        with c3:
+            metric = st.selectbox(
+                "Metric",
+                [
+                    "Deals Created",
+                    "Enrolments",
+                    "Enrolments / Created % (Conversion)",
+                    "Created / Enrolments %"
+                ],
+                index=1,
+                key="hm_metric",
+                help=("Counts or derived % per cell. Percentages are computed cell-wise using the same MTD/Cohort logic.")
+            )
+
+        x_col = dim_options[x_label]
+        y_col = dim_options[y_label]
+
+        # ---------- Normalize/prepare base series ----------
+        C = coerce_datetime(df_f[_create]).dt.date
+        P = coerce_datetime(df_f[_pay]).dt.date
+
+        # Basic helper
+        def between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
+
+        mask_created = between_date(C, range_start, range_end)
+        mask_paid    = between_date(P, range_start, range_end)
+
+        if mode == "MTD":
+            enrol_mask = mask_created & mask_paid
+        else:
+            enrol_mask = mask_paid
+
+        # Make categorical fields tidy + handle missing values for chosen dims
+        def norm_cat(series):
+            return series.fillna("Unknown").astype(str).str.strip()
+
+        X = norm_cat(df_f[x_col])
+        Y = norm_cat(df_f[y_col])
+
+        # ---------- Optional filters on chosen X/Y ----------
+        f1, f2, f3 = st.columns([1.4, 1.4, 0.8])
+        with f1:
+            x_vals_all = sorted(X.unique().tolist())
+            x_vals_sel = st.multiselect(f"Filter {x_label}", options=x_vals_all, default=x_vals_all, key="hm_xvals")
+        with f2:
+            y_vals_all = sorted(Y.unique().tolist())
+            y_vals_sel = st.multiselect(f"Filter {y_label}", options=y_vals_all, default=y_vals_all, key="hm_yvals")
+        with f3:
+            top_n = st.number_input("Top N per axis (0 = all)", min_value=0, max_value=200, value=0, step=1, key="hm_topn",
+                                    help="Apply after filters to keep the heatmap readable.")
+
+        # Apply value filters
+        base_mask = X.isin(x_vals_sel) & Y.isin(y_vals_sel)
+
+        # ---------- Build cell counts ----------
+        # Created counts are always by Create Date in window
+        created_df = pd.DataFrame({
+            "X": X[base_mask & mask_created],
+            "Y": Y[base_mask & mask_created],
+        })
+        created_ct = (created_df
+                      .assign(_one=1)
+                      .groupby(["X","Y"], dropna=False)["_one"].sum()
+                      .rename("Created")
+                      .reset_index()) if not created_df.empty else pd.DataFrame(columns=["X","Y","Created"])
+
+        # Enrolment counts per mode
+        enrol_df = pd.DataFrame({
+            "X": X[base_mask & enrol_mask],
+            "Y": Y[base_mask & enrol_mask],
+        })
+        enrol_ct = (enrol_df
+                    .assign(_one=1)
+                    .groupby(["X","Y"], dropna=False)["_one"].sum()
+                    .rename("Enrolments")
+                    .reset_index()) if not enrol_df.empty else pd.DataFrame(columns=["X","Y","Enrolments"])
+
+        # Merge
+        grid = created_ct.merge(enrol_ct, on=["X","Y"], how="outer").fillna(0)
+        grid["Created"] = grid["Created"].astype(int)
+        grid["Enrolments"] = grid["Enrolments"].astype(int)
+
+        # Derived metrics
+        grid["Enrolments / Created % (Conversion)"] = np.where(grid["Created"] > 0, grid["Enrolments"] / grid["Created"] * 100.0, np.nan)
+        grid["Created / Enrolments %"] = np.where(grid["Enrolments"] > 0, grid["Created"] / grid["Enrolments"] * 100.0, np.nan)
+
+        # ---------- Top-N trimming (optional) ----------
+        if top_n and top_n > 0 and not grid.empty:
+            # Keep top X and top Y by overall Enrolments (fallback to Created if Enrolments is all zeros)
+            by_x = grid.groupby("X")["Enrolments"].sum().sort_values(ascending=False)
+            if (by_x == 0).all():
+                by_x = grid.groupby("X")["Created"].sum().sort_values(ascending=False)
+            top_x = by_x.head(top_n).index.tolist()
+
+            by_y = grid.groupby("Y")["Enrolments"].sum().sort_values(ascending=False)
+            if (by_y == 0).all():
+                by_y = grid.groupby("Y")["Created"].sum().sort_values(ascending=False)
+            top_y = by_y.head(top_n).index.tolist()
+
+            grid = grid[grid["X"].isin(top_x) & grid["Y"].isin(top_y)]
+
+        # ---------- Output view ----------
+        view_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="hm_viewmode")
+
+        if grid.empty:
+            st.info("No data for the chosen filters/date range.")
+            return
+
+        # Choose value field for heatmap
+        val_field = "Created" if metric == "Deals Created" else \
+                    "Enrolments" if metric == "Enrolments" else metric  # one of the % columns
+
+        # Graph
+        if view_mode == "Graph":
+            # Choose appropriate color scale and formatting
+            if " % " in val_field or val_field.endswith("%") or "Conversion" in val_field:
+                color_scale = alt.Scale(scheme="blues")  # percentages
+                tooltip_fmt = ".1f"
+            else:
+                color_scale = alt.Scale(scheme="greens")  # counts
+                tooltip_fmt = "d"
+
+            ch = (
+                alt.Chart(grid)
+                .mark_rect()
+                .encode(
+                    x=alt.X("X:N", title=x_label, sort=sorted(grid["X"].unique().tolist())),
+                    y=alt.Y("Y:N", title=y_label, sort=sorted(grid["Y"].unique().tolist())),
+                    color=alt.Color(f"{val_field}:Q", scale=color_scale, title=val_field),
+                    tooltip=[
+                        alt.Tooltip("X:N", title=x_label),
+                        alt.Tooltip("Y:N", title=y_label),
+                        alt.Tooltip("Created:Q", title="Deals Created", format="d"),
+                        alt.Tooltip("Enrolments:Q", title="Enrolments", format="d"),
+                        alt.Tooltip("Enrolments / Created % (Conversion):Q", title="Enrolments / Created %", format=".1f"),
+                        alt.Tooltip("Created / Enrolments %:Q", title="Created / Enrolments %", format=".1f"),
+                    ]
+                )
+                .properties(
+                    height=420,
+                    title=f"Heatmap — {x_label} × {y_label} • Metric: {val_field} • Mode: {mode}"
+                )
+            )
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            # Pivot to a wide table for readability
+            # Round the %s just for display
+            show_tbl = grid.copy()
+            show_tbl["Enrolments / Created % (Conversion)"] = show_tbl["Enrolments / Created % (Conversion)"].round(1)
+            show_tbl["Created / Enrolments %"] = show_tbl["Created / Enrolments %"].round(1)
+            st.dataframe(show_tbl.sort_values(["Y","X"]), use_container_width=True)
+            st.download_button(
+                "Download CSV — Heatmap data",
+                show_tbl.to_csv(index=False).encode("utf-8"),
+                "heatmap_data.csv", "text/csv",
+                key="hm_dl"
+            )
+
+        # ---------- Totals / rollups (quick sums) ----------
+        st.markdown("#### Totals")
+        cta, ctb = st.columns(2)
+        with cta:
+            tot_created = int(grid["Created"].sum())
+            tot_enrol   = int(grid["Enrolments"].sum())
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Overall Deals Created</div>"
+                f"<div class='kpi-value'>{tot_created:,}</div>"
+                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
+                unsafe_allow_html=True
+            )
+        with ctb:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Overall Enrolments</div>"
+                f"<div class='kpi-value'>{tot_enrol:,}</div>"
+                f"<div class='kpi-sub'>Mode: {mode}</div></div>",
+                unsafe_allow_html=True
+            )
+
+    # run the tab
+    _heatmap_tab()
