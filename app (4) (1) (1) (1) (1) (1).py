@@ -4250,7 +4250,7 @@ elif view == "Referrals":
     # call the tab
     _referrals_tab()
 # =========================
-# Heatmap Tab (with Top 20% option)
+# Heatmap Tab (with dynamic Top % option)
 # =========================
 elif view == "Heatmap":
     def _heatmap_tab():
@@ -4442,7 +4442,7 @@ elif view == "Heatmap":
                      "Calibration Done — Count"]:
             grid[coln] = grid[coln].astype(int)
 
-        # Derived ratio
+        # Derived ratio (Created / Enrolments %)
         grid["Created / Enrolments %"] = np.where(
             grid["Enrolments"] > 0, grid["Created"] / grid["Enrolments"] * 100.0, np.nan
         )
@@ -4475,35 +4475,39 @@ elif view == "Heatmap":
         else:
             val_field = "Created / Enrolments %"
 
-        # ---------- NEW: Top 20% toggle ----------
-        t1, t2 = st.columns([1, 2])
+        # ---------- NEW: Dynamic Top % subset ----------
+        t1, t2 = st.columns([1, 1.6])
         with t1:
-            top20_mode = st.radio("Subset", ["All", "Top 20%"], index=0, horizontal=True, key="hm_top20",
-                                  help=("Counts: minimal set of cells reaching ≥20% of total (cumulative contribution). "
-                                        "Ratio: top 20% rows by value."))
+            subset_mode = st.radio("Subset", ["All", "Top %"], index=0, horizontal=True, key="hm_subset_mode",
+                                   help=("Counts: minimal set of cells reaching ≤ your % of total (cumulative contribution). "
+                                         "Ratio: top N% rows by value."))
+        with t2:
+            top_pct = st.number_input("Enter % threshold", min_value=0.0, max_value=100.0, value=20.0, step=1.0, key="hm_pct",
+                                      help="Example: 7.5 = keep cells that make up ~7.5% of the total; for ratios keep top 7.5% rows by value.")
 
-        def _apply_top20(df, field):
-            if df.empty:
+        def _apply_top_percent(df, field, pct):
+            if df.empty or pct <= 0:
+                return df
+            if pct >= 100:
                 return df
             if field.endswith("%"):
-                # Ratio: keep top 20% by value (not contribution)
-                k = max(1, int(np.ceil(0.20 * len(df))))
+                # Ratio: keep top N% rows by value
+                k = max(1, int(np.ceil((pct / 100.0) * len(df))))
                 return df.sort_values(field, ascending=False).head(k)
-            # Counts: contribution threshold
+            # Counts: contribution threshold (cumulative)
             total = df[field].sum()
             if total <= 0:
                 return df
             tmp = df.sort_values(field, ascending=False).copy()
-            tmp["_cum_share"] = tmp[field].cumsum() / total
-            out = tmp[tmp["_cum_share"] <= 0.20].drop(columns="_cum_share")
-            # ensure at least one row
+            tmp["_cum_share"] = tmp[field].cumsum() / total * 100.0
+            out = tmp[tmp["_cum_share"] <= pct].drop(columns="_cum_share")
             if out.empty and not tmp.empty:
                 out = tmp.head(1).drop(columns="_cum_share")
             return out
 
         grid_view = grid.copy()
-        if top20_mode == "Top 20%":
-            grid_view = _apply_top20(grid_view, val_field)
+        if subset_mode == "Top %":
+            grid_view = _apply_top_percent(grid_view, val_field, top_pct)
 
         # ---------- Output view ----------
         view_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="hm_viewmode")
@@ -4540,7 +4544,7 @@ elif view == "Heatmap":
                 )
                 .properties(
                     height=420,
-                    title=f"Heatmap — {x_label} × {y_label} • Metric: {val_field} • Mode: {mode} • {top20_mode}"
+                    title=f"Heatmap — {x_label} × {y_label} • Metric: {val_field} • Mode: {mode} • Subset: {subset_mode} {'' if subset_mode=='All' else f'({top_pct:.1f}%)'}"
                 )
             )
             st.altair_chart(ch, use_container_width=True)
