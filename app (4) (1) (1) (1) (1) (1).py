@@ -4250,7 +4250,7 @@ elif view == "Referrals":
     # call the tab
     _referrals_tab()
 # =========================
-# Heatmap Tab (with dynamic Top % option)
+# Heatmap Tab (with dynamic Top % option + extra derived ratios)
 # =========================
 elif view == "Heatmap":
     def _heatmap_tab():
@@ -4324,11 +4324,14 @@ elif view == "Heatmap":
                     "First Calibration Scheduled — Count",
                     "Calibration Rescheduled — Count",
                     "Calibration Done — Count",
-                    "Enrolments / Created %",   # ratio (updated)
+                    "Enrolments / Created %",                 # ratio (existing)
+                    "Calibration Done / Enrolments %",        # NEW
+                    "Calibration Done / First Scheduled %",   # NEW
+                    "First Scheduled / Created %",            # NEW
                 ],
                 index=1,
                 key="hm_metric",
-                help="Counts or Enrolments/Created % per cell, computed with the same MTD/Cohort logic."
+                help="Counts or % ratios per cell, computed with the same MTD/Cohort logic."
             )
 
         x_col = dim_options[x_label]
@@ -4442,9 +4445,24 @@ elif view == "Heatmap":
                      "Calibration Done — Count"]:
             grid[coln] = grid[coln].astype(int)
 
-        # Derived ratio (Enrolments / Created %)
+        # ----- Derived ratios -----
+        # Enrolments / Created %
         grid["Enrolments / Created %"] = np.where(
             grid["Created"] > 0, grid["Enrolments"] / grid["Created"] * 100.0, np.nan
+        )
+        # NEW: Calibration Done / Enrolments %
+        grid["Calibration Done / Enrolments %"] = np.where(
+            grid["Enrolments"] > 0, grid["Calibration Done — Count"] / grid["Enrolments"] * 100.0, np.nan
+        )
+        # NEW: Calibration Done / First Scheduled %
+        grid["Calibration Done / First Scheduled %"] = np.where(
+            grid["First Calibration Scheduled — Count"] > 0,
+            grid["Calibration Done — Count"] / grid["First Calibration Scheduled — Count"] * 100.0, np.nan
+        )
+        # NEW: First Scheduled / Created %
+        grid["First Scheduled / Created %"] = np.where(
+            grid["Created"] > 0,
+            grid["First Calibration Scheduled — Count"] / grid["Created"] * 100.0, np.nan
         )
 
         # ---------- Top-N trimming (optional) ----------
@@ -4472,6 +4490,12 @@ elif view == "Heatmap":
             val_field = "Calibration Rescheduled — Count"
         elif metric == "Calibration Done — Count":
             val_field = "Calibration Done — Count"
+        elif metric == "Calibration Done / Enrolments %":
+            val_field = "Calibration Done / Enrolments %"
+        elif metric == "Calibration Done / First Scheduled %":
+            val_field = "Calibration Done / First Scheduled %"
+        elif metric == "First Scheduled / Created %":
+            val_field = "First Scheduled / Created %"
         else:
             val_field = "Enrolments / Created %"
 
@@ -4540,6 +4564,9 @@ elif view == "Heatmap":
                         alt.Tooltip("Calibration Rescheduled — Count:Q", title="Cal Rescheduled", format="d"),
                         alt.Tooltip("Calibration Done — Count:Q", title="Cal Done", format="d"),
                         alt.Tooltip("Enrolments / Created %:Q", title="Enrolments / Created %", format=".1f"),
+                        alt.Tooltip("Calibration Done / Enrolments %:Q", title="Cal Done / Enrolments %", format=".1f"),
+                        alt.Tooltip("Calibration Done / First Scheduled %:Q", title="Cal Done / First Scheduled %", format=".1f"),
+                        alt.Tooltip("First Scheduled / Created %:Q", title="First Scheduled / Created %", format=".1f"),
                     ]
                 )
                 .properties(
@@ -4550,7 +4577,17 @@ elif view == "Heatmap":
             st.altair_chart(ch, use_container_width=True)
         else:
             show_tbl = grid_view.copy()
-            show_tbl["Enrolments / Created %"] = show_tbl["Enrolments / Created %"].round(1)
+            # Round all ratio columns if present
+            ratio_cols = [
+                "Enrolments / Created %",
+                "Calibration Done / Enrolments %",
+                "Calibration Done / First Scheduled %",
+                "First Scheduled / Created %",
+            ]
+            for rc in ratio_cols:
+                if rc in show_tbl.columns:
+                    show_tbl[rc] = show_tbl[rc].round(1)
+
             st.dataframe(show_tbl.sort_values(["Y","X"]), use_container_width=True)
             st.download_button(
                 "Download CSV — Heatmap data",
