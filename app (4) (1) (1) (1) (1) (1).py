@@ -4250,7 +4250,7 @@ elif view == "Referrals":
     # call the tab
     _referrals_tab()
 # =========================
-# Heatmap Tab (full, with "All" in filters + Created/Enrolments % + calibration counts)
+# Heatmap Tab (with Top 20% option)
 # =========================
 elif view == "Heatmap":
     def _heatmap_tab():
@@ -4265,7 +4265,7 @@ elif view == "Heatmap":
         _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
         _sib    = find_col(df_f, ["Sibling Deal","Sibling deal","Sibling"])
 
-        # NEW: calibration columns
+        # Calibration columns
         _first_cal = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
         _resched   = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
         _done      = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
@@ -4324,7 +4324,7 @@ elif view == "Heatmap":
                     "First Calibration Scheduled — Count",
                     "Calibration Rescheduled — Count",
                     "Calibration Done — Count",
-                    "Created / Enrolments %",   # ratio (only this one)
+                    "Created / Enrolments %",   # ratio
                 ],
                 index=1,
                 key="hm_metric",
@@ -4378,10 +4378,10 @@ elif view == "Heatmap":
         def add_all_option(label, values):
             if label in {"JetLearn Deal Source", "Academic Counsellor"}:
                 opts = ["All"] + values
-                default = ["All"]  # preselected
+                default = ["All"]
                 return opts, default
             else:
-                return values, values  # others: select all by default
+                return values, values  # others selected by default
 
         x_options, x_default = add_all_option(x_label, x_vals_all)
         y_options, y_default = add_all_option(y_label, y_vals_all)
@@ -4461,14 +4461,7 @@ elif view == "Heatmap":
 
             grid = grid[grid["X"].isin(top_x) & grid["Y"].isin(top_y)]
 
-        # ---------- Output view ----------
-        view_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="hm_viewmode")
-
-        if grid.empty:
-            st.info("No data for the chosen filters/date range.")
-            return
-
-        # Map metric to field
+        # ---------- Metric selection ----------
         if metric == "Deals Created":
             val_field = "Created"
         elif metric == "Enrolments":
@@ -4482,6 +4475,43 @@ elif view == "Heatmap":
         else:
             val_field = "Created / Enrolments %"
 
+        # ---------- NEW: Top 20% toggle ----------
+        t1, t2 = st.columns([1, 2])
+        with t1:
+            top20_mode = st.radio("Subset", ["All", "Top 20%"], index=0, horizontal=True, key="hm_top20",
+                                  help=("Counts: minimal set of cells reaching ≥20% of total (cumulative contribution). "
+                                        "Ratio: top 20% rows by value."))
+
+        def _apply_top20(df, field):
+            if df.empty:
+                return df
+            if field.endswith("%"):
+                # Ratio: keep top 20% by value (not contribution)
+                k = max(1, int(np.ceil(0.20 * len(df))))
+                return df.sort_values(field, ascending=False).head(k)
+            # Counts: contribution threshold
+            total = df[field].sum()
+            if total <= 0:
+                return df
+            tmp = df.sort_values(field, ascending=False).copy()
+            tmp["_cum_share"] = tmp[field].cumsum() / total
+            out = tmp[tmp["_cum_share"] <= 0.20].drop(columns="_cum_share")
+            # ensure at least one row
+            if out.empty and not tmp.empty:
+                out = tmp.head(1).drop(columns="_cum_share")
+            return out
+
+        grid_view = grid.copy()
+        if top20_mode == "Top 20%":
+            grid_view = _apply_top20(grid_view, val_field)
+
+        # ---------- Output view ----------
+        view_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="hm_viewmode")
+
+        if grid_view.empty:
+            st.info("No data for the chosen filters/date range.")
+            return
+
         if view_mode == "Graph":
             if val_field.endswith("%"):
                 color_scale = alt.Scale(scheme="blues")
@@ -4491,11 +4521,11 @@ elif view == "Heatmap":
                 tooltip_fmt = "d"
 
             ch = (
-                alt.Chart(grid)
+                alt.Chart(grid_view)
                 .mark_rect()
                 .encode(
-                    x=alt.X("X:N", title=x_label, sort=sorted(grid["X"].unique().tolist())),
-                    y=alt.Y("Y:N", title=y_label, sort=sorted(grid["Y"].unique().tolist())),
+                    x=alt.X("X:N", title=x_label, sort=sorted(grid_view["X"].unique().tolist())),
+                    y=alt.Y("Y:N", title=y_label, sort=sorted(grid_view["Y"].unique().tolist())),
                     color=alt.Color(f"{val_field}:Q", scale=color_scale, title=val_field),
                     tooltip=[
                         alt.Tooltip("X:N", title=x_label),
@@ -4510,14 +4540,14 @@ elif view == "Heatmap":
                 )
                 .properties(
                     height=420,
-                    title=f"Heatmap — {x_label} × {y_label} • Metric: {val_field} • Mode: {mode}"
+                    title=f"Heatmap — {x_label} × {y_label} • Metric: {val_field} • Mode: {mode} • {top20_mode}"
                 )
             )
             st.altair_chart(ch, use_container_width=True)
         else:
-            show_tbl = grid.copy()
+            show_tbl = grid_view.copy()
             show_tbl["Created / Enrolments %"] = show_tbl["Created / Enrolments %"].round(1)
-            st.dataframe(show_tbl.sort_values(["Y","X"]), use_container_width=True)
+            st.dataframe(show_tbl.sort_values([ "Y","X"]), use_container_width=True)
             st.download_button(
                 "Download CSV — Heatmap data",
                 show_tbl.to_csv(index=False).encode("utf-8"),
@@ -4525,7 +4555,7 @@ elif view == "Heatmap":
                 key="hm_dl"
             )
 
-        # ---------- Totals / rollups ----------
+        # ---------- Totals / rollups (over the current grid subset) ----------
         st.markdown(
             """
             <style>
@@ -4537,10 +4567,10 @@ elif view == "Heatmap":
             """,
             unsafe_allow_html=True
         )
-        st.markdown("#### Totals")
+        st.markdown("#### Totals (for displayed cells)")
         cta, ctb, ctc, ctd = st.columns(4)
         with cta:
-            tot_created = int(grid["Created"].sum())
+            tot_created = int(grid_view["Created"].sum())
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>Overall Deals Created</div>"
                 f"<div class='kpi-value'>{tot_created:,}</div>"
@@ -4548,7 +4578,7 @@ elif view == "Heatmap":
                 unsafe_allow_html=True
             )
         with ctb:
-            tot_enrol = int(grid["Enrolments"].sum())
+            tot_enrol = int(grid_view["Enrolments"].sum())
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>Overall Enrolments</div>"
                 f"<div class='kpi-value'>{tot_enrol:,}</div>"
@@ -4556,7 +4586,7 @@ elif view == "Heatmap":
                 unsafe_allow_html=True
             )
         with ctc:
-            tot_first = int(grid["First Calibration Scheduled — Count"].sum())
+            tot_first = int(grid_view["First Calibration Scheduled — Count"].sum())
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>First Cal Scheduled (Total)</div>"
                 f"<div class='kpi-value'>{tot_first:,}</div>"
@@ -4564,7 +4594,7 @@ elif view == "Heatmap":
                 unsafe_allow_html=True
             )
         with ctd:
-            tot_done = int(grid["Calibration Done — Count"].sum())
+            tot_done = int(grid_view["Calibration Done — Count"].sum())
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>Calibration Done (Total)</div>"
                 f"<div class='kpi-value'>{tot_done:,}</div>"
