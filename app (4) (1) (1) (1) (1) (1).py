@@ -4325,9 +4325,9 @@ elif view == "Heatmap":
                     "Calibration Rescheduled — Count",
                     "Calibration Done — Count",
                     "Enrolments / Created %",                 # ratio (existing)
-                    "Calibration Done / Enrolments %",        # NEW
-                    "Calibration Done / First Scheduled %",   # NEW
-                    "First Scheduled / Created %",            # NEW
+                    "Enrolments / Calibration Done %",        # CHANGED (was Cal Done / Enrolments %)
+                    "Calibration Done / First Scheduled %",
+                    "First Scheduled / Created %",
                 ],
                 index=1,
                 key="hm_metric",
@@ -4450,16 +4450,16 @@ elif view == "Heatmap":
         grid["Enrolments / Created %"] = np.where(
             grid["Created"] > 0, grid["Enrolments"] / grid["Created"] * 100.0, np.nan
         )
-        # NEW: Calibration Done / Enrolments %
-        grid["Calibration Done / Enrolments %"] = np.where(
-            grid["Enrolments"] > 0, grid["Calibration Done — Count"] / grid["Enrolments"] * 100.0, np.nan
+        # CHANGED: Enrolments / Calibration Done %
+        grid["Enrolments / Calibration Done %"] = np.where(
+            grid["Calibration Done — Count"] > 0, grid["Enrolments"] / grid["Calibration Done — Count"] * 100.0, np.nan
         )
-        # NEW: Calibration Done / First Scheduled %
+        # Calibration Done / First Scheduled %
         grid["Calibration Done / First Scheduled %"] = np.where(
             grid["First Calibration Scheduled — Count"] > 0,
             grid["Calibration Done — Count"] / grid["First Calibration Scheduled — Count"] * 100.0, np.nan
         )
-        # NEW: First Scheduled / Created %
+        # First Scheduled / Created %
         grid["First Scheduled / Created %"] = np.where(
             grid["Created"] > 0,
             grid["First Calibration Scheduled — Count"] / grid["Created"] * 100.0, np.nan
@@ -4490,8 +4490,8 @@ elif view == "Heatmap":
             val_field = "Calibration Rescheduled — Count"
         elif metric == "Calibration Done — Count":
             val_field = "Calibration Done — Count"
-        elif metric == "Calibration Done / Enrolments %":
-            val_field = "Calibration Done / Enrolments %"
+        elif metric == "Enrolments / Calibration Done %":
+            val_field = "Enrolments / Calibration Done %"
         elif metric == "Calibration Done / First Scheduled %":
             val_field = "Calibration Done / First Scheduled %"
         elif metric == "First Scheduled / Created %":
@@ -4564,7 +4564,7 @@ elif view == "Heatmap":
                         alt.Tooltip("Calibration Rescheduled — Count:Q", title="Cal Rescheduled", format="d"),
                         alt.Tooltip("Calibration Done — Count:Q", title="Cal Done", format="d"),
                         alt.Tooltip("Enrolments / Created %:Q", title="Enrolments / Created %", format=".1f"),
-                        alt.Tooltip("Calibration Done / Enrolments %:Q", title="Cal Done / Enrolments %", format=".1f"),
+                        alt.Tooltip("Enrolments / Calibration Done %:Q", title="Enrolments / Cal Done %", format=".1f"),
                         alt.Tooltip("Calibration Done / First Scheduled %:Q", title="Cal Done / First Scheduled %", format=".1f"),
                         alt.Tooltip("First Scheduled / Created %:Q", title="First Scheduled / Created %", format=".1f"),
                     ]
@@ -4580,7 +4580,7 @@ elif view == "Heatmap":
             # Round all ratio columns if present
             ratio_cols = [
                 "Enrolments / Created %",
-                "Calibration Done / Enrolments %",
+                "Enrolments / Calibration Done %",
                 "Calibration Done / First Scheduled %",
                 "First Scheduled / Created %",
             ]
