@@ -5050,15 +5050,15 @@ elif view == "Deal Decay":
         with ev1:
             from_ev = st.selectbox("From event", list(event_map.keys()), index=0, key="dd_from")
         with ev2:
-            # default TO = Enrolled
             to_choices = [k for k in event_map.keys() if k != from_ev]
             to_ev = st.selectbox("To event", to_choices, index=to_choices.index("Enrolled (Payment)") if "Enrolled (Payment)" in to_choices else 0, key="dd_to")
 
-        # -------- Build working DF + normalize dates --------
+        # -------- Build working DF + normalize dates (keep as datetime64[ns]) --------
         d = df_f.copy()
         for label, col in event_map.items():
             if col and col in d.columns:
-                d[f"__{label}"] = coerce_datetime(d[col]).dt.date
+                # normalize to midnight but KEEP datetime64[ns]; don't convert to .dt.date
+                d[f"__{label}"] = coerce_datetime(d[col]).dt.normalize()
             else:
                 d[f"__{label}"] = pd.NaT
 
@@ -5068,17 +5068,20 @@ elif view == "Deal Decay":
                 d = d[norm_cat(d[colname]).isin(picks)]
 
         # Window masks helpers
-        def between_date(s, a, b):
-            return s.notna() & (s >= a) & (s <= b)
+        def between_dt(s, a, b):
+            # convert range_start/end (date) to Timestamps for comparison with datetime64[ns]
+            a_ts = pd.Timestamp(a)
+            b_ts = pd.Timestamp(b)
+            return s.notna() & (s >= a_ts) & (s <= b_ts)
 
-        mask_created = between_date(d["__Created"], range_start, range_end)
-        mask_to      = between_date(d[f"__{to_ev}"], range_start, range_end)
+        mask_created = between_dt(d["__Created"], range_start, range_end)
+        mask_to      = between_dt(d[f"__{to_ev}"], range_start, range_end)
 
         # Population filter by mode:
         if mode == "MTD":
-            pop_mask = mask_created  # must be created in window
+            pop_mask = mask_created
         else:
-            pop_mask = mask_to       # consider rows where TO fell in window
+            pop_mask = mask_to
 
         # Need both dates present & valid ordering for duration
         valid_pair = d[f"__{from_ev}"].notna() & d[f"__{to_ev}"].notna() & (d[f"__{to_ev}"] >= d[f"__{from_ev}"])
@@ -5088,7 +5091,7 @@ elif view == "Deal Decay":
             st.info("No rows match the chosen filters, mode, and date window for computing decay.", icon="ℹ️")
             return
 
-        # Duration in days
+        # Duration in days (now safe: timedeltas)
         d_use["__days"] = (d_use[f"__{to_ev}"] - d_use[f"__{from_ev}"]).dt.days.astype(int)
 
         # -------- KPI: mu & sigma --------
@@ -5137,10 +5140,7 @@ elif view == "Deal Decay":
                 "deal_decay_durations.csv", "text/csv", key="dd_dl1"
             )
         elif view_mode == "Histogram":
-            # Bin width slider
             bw = st.slider("Bin width (days)", min_value=1, max_value=60, value=7, step=1, key="dd_bw")
-            # Build histogram counts
-            # (Altair can bin automatically; we use step=bw)
             ch = (
                 alt.Chart(dist_df)
                 .mark_bar(opacity=0.9)
@@ -5151,17 +5151,15 @@ elif view == "Deal Decay":
                 )
                 .properties(height=320, title=f"Histogram — {from_ev} → {to_ev}")
             )
-            # Add vertical line for mean
             mean_rule = alt.Chart(pd.DataFrame({"mu":[mu]})).mark_rule().encode(x="mu:Q")
             st.altair_chart(ch + mean_rule, use_container_width=True)
         else:
-            # Bell curve using density transform + rule for mu
             ch = (
                 alt.Chart(dist_df)
                 .transform_density(
                     "Days",
                     as_=["Days","Density"],
-                    extent=[max(0, dist_df["Days"].min()), float(dist_df["Days"].max())],
+                    extent=[max(0, float(dist_df["Days"].min())), float(dist_df["Days"].max())],
                     steps=200
                 )
                 .mark_area(opacity=0.5)
@@ -5179,9 +5177,8 @@ elif view == "Deal Decay":
 
         # -------- Month-on-Month trend of average days --------
         st.markdown("### Month-on-Month — Average Days")
-        # month of TO event defines the bucket
-        to_month = coerce_datetime(d_use[f"__{to_ev}"]).dt.to_period("M")
-        end_month = pd.Period(range_end.replace(day=1), freq="M")
+        to_month = d_use[f"__{to_ev}"].dt.to_period("M")
+        end_month = pd.Period(pd.Timestamp(range_end).normalize(), freq="M")
         months = pd.period_range(end=end_month, periods=mom_trailing, freq="M")
         trend = (
             d_use.assign(_m=to_month)
