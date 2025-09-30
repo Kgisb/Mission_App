@@ -4250,369 +4250,305 @@ elif view == "Referrals":
     # call the tab
     _referrals_tab()
 # =========================
-# Heatmap Tab (with dynamic Top % option)
+# Heatmap Tab (FULL ADD-ON)
 # =========================
 elif view == "Heatmap":
-    def _heatmap_tab():
-        st.subheader("Heatmap — Interactive Crosstab (MTD / Cohort)")
+    st.subheader("Heatmap — Filtered Cross-Tab with Smart Subset")
 
-        # ---------- Resolve key columns (defensive) ----------
-        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
-        _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
-        _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
-        _cty    = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
-        _cns    = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
-        _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
-        _sib    = find_col(df_f, ["Sibling Deal","Sibling deal","Sibling"])
+    # ---------- Resolve columns safely ----------
+    _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+    _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
+    _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+    _ctry   = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+    _cns    = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
 
-        # Calibration columns
-        _first_cal = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
-        _resched   = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
-        _done      = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
+    _first  = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
+    _resch  = cal_resched_col     if (cal_resched_col in df_f.columns)     else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
+    _done   = cal_done_col        if (cal_done_col in df_f.columns)        else find_col(df_f, ["Calibration Done Date","Cal Done","Calibration Completed Date"])
 
-        if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
-            st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
-            return
+    if not _create or not _pay or _create not in df_f.columns or _pay not in df_f.columns:
+        st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
+        st.stop()
 
-        # ---------- Mode + Date scope ----------
-        col_top1, col_top2 = st.columns([1.1, 1.4])
-        with col_top1:
-            mode = st.radio("Mode", ["MTD", "Cohort"], index=1, horizontal=True, key="hm_mode",
-                            help=("MTD: Enrolments / events counted only if the deal was also created in the window. "
-                                  "Cohort: Enrolments / events counted by their own date regardless of create month."))
-        with col_top2:
-            scope = st.radio("Date scope", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="hm_dscope")
+    # ---------- Controls: Mode & Date scope ----------
+    topc1, topc2 = st.columns([1,1])
+    with topc1:
+        mode = st.radio("Mode", ["MTD", "Cohort"], index=0, horizontal=True, key="ht_mode")
+    with topc2:
+        scope = st.radio("Date scope", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="ht_scope")
 
-        today_d = date.today()
-        if scope == "This month":
-            range_start, range_end = month_bounds(today_d)
-        elif scope == "Last month":
-            range_start, range_end = last_month_bounds(today_d)
+    if scope == "This month":
+        range_start, range_end = month_bounds(today)
+    elif scope == "Last month":
+        range_start, range_end = last_month_bounds(today)
+    else:
+        dc1, dc2 = st.columns(2)
+        with dc1: range_start = st.date_input("Start date", value=today.replace(day=1), key="ht_start")
+        with dc2: range_end   = st.date_input("End date",   value=month_bounds(today)[1], key="ht_end")
+        if range_end < range_start:
+            st.error("End date cannot be before start date."); st.stop()
+
+    st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
+
+    # ---------- Core series ----------
+    C  = coerce_datetime(df_f[_create]).dt.date
+    P  = coerce_datetime(df_f[_pay]).dt.date
+    F1 = coerce_datetime(df_f[_first]).dt.date if _first else pd.Series(pd.NaT, index=df_f.index)
+    RS = coerce_datetime(df_f[_resch]).dt.date if _resch else pd.Series(pd.NaT, index=df_f.index)
+    DN = coerce_datetime(df_f[_done]).dt.date  if _done  else pd.Series(pd.NaT, index=df_f.index)
+
+    # ---------- Filters (with "All" pre-selected) ----------
+    fcol1, fcol2 = st.columns([1,1])
+    if _src and _src in df_f.columns:
+        src_vals = ["All"] + sorted(df_f[_src].fillna("Unknown").astype(str).unique().tolist())
+        with fcol1:
+            pick_src = st.multiselect("Filter: JetLearn Deal Source", options=src_vals, default=["All"], key="ht_pick_src")
+    else:
+        pick_src = ["All"]
+
+    if _cns and _cns in df_f.columns:
+        cns_vals = ["All"] + sorted(df_f[_cns].fillna("Unknown").astype(str).unique().tolist())
+        with fcol2:
+            pick_cns = st.multiselect("Filter: Academic Counsellor", options=cns_vals, default=["All"], key="ht_pick_cns")
+    else:
+        pick_cns = ["All"]
+
+    mask = pd.Series(True, index=df_f.index)
+    if _src and _src in df_f.columns and pick_src and ("All" not in pick_src):
+        mask = mask & df_f[_src].fillna("Unknown").astype(str).isin(pick_src)
+    if _cns and _cns in df_f.columns and pick_cns and ("All" not in pick_cns):
+        mask = mask & df_f[_cns].fillna("Unknown").astype(str).isin(pick_cns)
+
+    dbase = df_f.loc[mask].copy()
+
+    # ---------- X / Y selection ----------
+    dims = []
+    name_map = {}
+    if _src: dims.append("JetLearn Deal Source"); name_map["JetLearn Deal Source"] = _src
+    if _ctry: dims.append("Country");             name_map["Country"] = _ctry
+    if _cns:  dims.append("Academic Counsellor"); name_map["Academic Counsellor"] = _cns
+
+    if len(dims) < 2:
+        st.info("Need at least two of: JetLearn Deal Source, Country, Academic Counsellor to build a heatmap.")
+        st.stop()
+
+    cxy1, cxy2, cxy3 = st.columns([1,1,1.2])
+    with cxy1:
+        x_dim_lbl = st.selectbox("X axis", options=dims, index=0, key="ht_x")
+    with cxy2:
+        other_dims = [d for d in dims if d != x_dim_lbl]
+        y_dim_lbl = st.selectbox("Y axis", options=other_dims, index=0, key="ht_y")
+    with cxy3:
+        metric_name = st.selectbox(
+            "Metric (heatmap color)",
+            [
+                "Create Date (deals) — Count",
+                "Payment Received Date — Count",
+                "First Calibration Scheduled Date — Count",
+                "Calibration Rescheduled Date — Count",
+                "Calibration Done Date — Count",
+                "Created/Enrolments %"
+            ],
+            index=1,  # default to Enrolments
+            key="ht_metric"
+        )
+
+    x_col = name_map[x_dim_lbl]
+    y_col = name_map[y_dim_lbl]
+
+    # ---------- Window masks ----------
+    def between(s, a, b):
+        return s.notna() & (s >= a) & (s <= b)
+
+    c_in = between(C.loc[dbase.index], range_start, range_end)
+    p_in = between(P.loc[dbase.index], range_start, range_end)
+    f_in = between(F1.loc[dbase.index], range_start, range_end) if _first else pd.Series(False, index=dbase.index)
+    r_in = between(RS.loc[dbase.index], range_start, range_end) if _resch else pd.Series(False, index=dbase.index)
+    d_in = between(DN.loc[dbase.index], range_start, range_end) if _done  else pd.Series(False, index=dbase.index)
+
+    # Mode rules (same as your Trend & Analysis):
+    # Created count → by Create Date
+    created_mask = c_in
+    # Enrolments (payments)
+    if mode == "MTD":
+        paid_mask = c_in & p_in      # created in window AND paid in window
+        f_mask = c_in & f_in
+        r_mask = c_in & r_in
+        d_mask = c_in & d_in
+    else:
+        paid_mask = p_in             # cohort: paid in window (ignore create)
+        f_mask = f_in
+        r_mask = r_in
+        d_mask = d_in
+
+    # ---------- Aggregate per (X,Y) ----------
+    work = dbase[[x_col, y_col]].copy()
+    work["_created"] = created_mask.astype(int)
+    work["_paid"]    = paid_mask.astype(int)
+    work["_f1"]      = f_mask.astype(int)
+    work["_res"]     = r_mask.astype(int)
+    work["_done"]    = d_mask.astype(int)
+
+    grp = (
+        work.groupby([x_col, y_col], dropna=False)
+            .agg(
+                Created=("._created".replace(".", ""), "sum") if False else ("_created","sum"),
+                Enrolments=("_paid","sum"),
+                FirstCal=("_f1","sum"),
+                CalResch=("_res","sum"),
+                CalDone=("_done","sum"),
+            )
+            .reset_index()
+    )
+    # Created/Enrolments % (as requested: Created ÷ Enrolments)
+    grp["Created/Enrolments %"] = np.where(grp["Enrolments"] > 0, (grp["Created"] / grp["Enrolments"]) * 100.0, np.nan)
+
+    # ---------- Subset mode (Pareto / Percentile) ----------
+    st.markdown("#### Subset (optional)")
+    subc1, subc2, subc3, subc4 = st.columns([1,1,1,1.4])
+    with subc1:
+        subset_mode = st.radio("Subset mode", ["None", "Pareto coverage", "Percentile cutoff"], index=0, horizontal=False, key="ht_subset_mode")
+    with subc2:
+        target_pct = st.number_input("Target %", min_value=1, max_value=99, value=80, step=1, key="ht_target_pct",
+                                     help="For Pareto = cumulative share target; Percentile = cell-count percentile.")
+    with subc3:
+        base_for_subset = st.selectbox("Base", ["Enrolments","Created"], index=0, key="ht_subset_base")
+    with subc4:
+        high_or_filter = st.radio("Apply to heatmap", ["Highlight", "Filter"], index=0, horizontal=True, key="ht_hi_or_f")
+
+    sc1, sc2 = st.columns([1,1])
+    with sc1:
+        min_cell = st.number_input("Min cell count (ignore < N)", min_value=0, max_value=999999, value=0, step=1, key="ht_min_cell")
+    with sc2:
+        min_cells_keep = st.number_input("Keep at least N cells", min_value=0, max_value=999999, value=0, step=1, key="ht_min_cells_keep")
+
+    # Build selection mask over rows of grp
+    sel_mask = pd.Series(True, index=grp.index)
+    if subset_mode != "None":
+        base_counts = grp[base_for_subset].astype(float).copy()
+        if min_cell > 0:
+            base_counts = base_counts.mask(base_counts < min_cell, 0)
+
+        if subset_mode == "Pareto coverage":
+            # sort desc, cumshare until >= target
+            order = base_counts.sort_values(ascending=False)
+            total = order.sum()
+            if total > 0:
+                cumshare = order.cumsum() / total * 100.0
+                keep_idx = cumshare.index[cumshare <= target_pct].tolist()
+                # ensure we include the first one exceeding target
+                if len(keep_idx) < len(order):
+                    first_over = cumshare.index[len(keep_idx)] if len(order) > len(keep_idx) else None
+                    if first_over is not None:
+                        keep_idx.append(first_over)
+                # enforce min_cells_keep
+                if len(keep_idx) < int(min_cells_keep):
+                    keep_idx = order.index[:int(min_cells_keep)].tolist()
+                sel_mask = grp.index.isin(keep_idx)
+            else:
+                sel_mask = pd.Series(False, index=grp.index)
         else:
-            d1, d2 = st.columns(2)
-            with d1: range_start = st.date_input("Start date", value=today_d.replace(day=1), key="hm_start")
-            with d2: range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="hm_end")
-            if range_end < range_start:
-                st.error("End date cannot be before start date.")
-                return
-        st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
+            # Percentile cutoff on counts
+            vals = base_counts.values
+            if len(vals) > 0:
+                cutoff = np.percentile(vals, target_pct)
+                sel_mask = base_counts >= cutoff
+                # enforce min_cell and min_cells_keep
+                if min_cell > 0:
+                    sel_mask = sel_mask & (base_counts >= min_cell)
+                if sel_mask.sum() < int(min_cells_keep):
+                    top_idx = base_counts.sort_values(ascending=False).index[:int(min_cells_keep)]
+                    sel_mask = grp.index.isin(top_idx)
+            else:
+                sel_mask = pd.Series(False, index=grp.index)
 
-        # ---------- Dimension picker ----------
-        dim_options = {}
-        if _src: dim_options["JetLearn Deal Source"] = _src
-        if _cty: dim_options["Country"] = _cty
-        if _cns: dim_options["Academic Counsellor"] = _cns
-        if _ris: dim_options["Referral Intent Source"] = _ris
-        if _sib: dim_options["Sibling Deal"] = _sib
+    # ---------- Build heatmap dataframe ----------
+    # Choose the metric column for color
+    metric_map = {
+        "Create Date (deals) — Count": "Created",
+        "Payment Received Date — Count": "Enrolments",
+        "First Calibration Scheduled Date — Count": "FirstCal",
+        "Calibration Rescheduled Date — Count": "CalResch",
+        "Calibration Done Date — Count": "CalDone",
+        "Created/Enrolments %": "Created/Enrolments %",
+    }
+    value_col = metric_map[metric_name]
 
-        if len(dim_options) < 2:
-            st.info("Need at least two categorical columns (e.g., Deal Source and Country) to draw a heatmap.")
-            return
+    heat_df = grp.copy()
+    if high_or_filter == "Filter" and subset_mode != "None":
+        heat_df = heat_df.loc[sel_mask].copy()
+        highlight = None
+    else:
+        highlight = sel_mask if (subset_mode != "None") else None  # used to set opacity
 
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
-        with c1:
-            x_label = st.selectbox("X axis (categories)", list(dim_options.keys()), index=0, key="hm_x")
-        with c2:
-            y_keys = [k for k in dim_options.keys() if k != x_label]
-            y_label = st.selectbox("Y axis (categories)", y_keys, index=0, key="hm_y")
-        with c3:
-            metric = st.selectbox(
-                "Metric",
-                [
-                    "Deals Created",
-                    "Enrolments",
-                    "First Calibration Scheduled — Count",
-                    "Calibration Rescheduled — Count",
-                    "Calibration Done — Count",
-                    "Created / Enrolments %",   # ratio
+    # ---------- Graph / Table ----------
+    view_mode = st.radio("View", ["Graph", "Table"], index=0, horizontal=True, key="ht_view")
+
+    # Ensure string dims to avoid Altair type issues on NaN
+    heat_df[x_col] = heat_df[x_col].fillna("Unknown").astype(str)
+    heat_df[y_col] = heat_df[y_col].fillna("Unknown").astype(str)
+
+    if view_mode == "Graph":
+        if heat_df.empty:
+            st.info("No cells to plot for the chosen filters and window.")
+        else:
+            # order axes by total Enrolments so the heatmap reads well
+            x_order = (heat_df.groupby(x_col)["Enrolments"].sum().sort_values(ascending=False).index.tolist())
+            y_order = (heat_df.groupby(y_col)["Enrolments"].sum().sort_values(ascending=False).index.tolist())
+
+            plot_df = heat_df[[x_col, y_col, value_col]].copy()
+            plot_df = plot_df.rename(columns={x_col: "X", y_col: "Y", value_col: "Value"})
+
+            base = alt.Chart(plot_df).encode(
+                x=alt.X("X:N", title=x_dim_lbl, sort=x_order),
+                y=alt.Y("Y:N", title=y_dim_lbl, sort=y_order),
+                tooltip=[
+                    alt.Tooltip("X:N", title=x_dim_lbl),
+                    alt.Tooltip("Y:N", title=y_dim_lbl),
+                    alt.Tooltip("Value:Q", title=metric_name, format=".1f" if " %" in metric_name else "")
                 ],
-                index=1,
-                key="hm_metric",
-                help="Counts or Created/Enrolments % per cell, computed with the same MTD/Cohort logic."
             )
 
-        x_col = dim_options[x_label]
-        y_col = dim_options[y_label]
-
-        # ---------- Normalize/prepare base series ----------
-        C = coerce_datetime(df_f[_create]).dt.date
-        P = coerce_datetime(df_f[_pay]).dt.date
-        F = coerce_datetime(df_f[_first_cal]).dt.date if _first_cal and _first_cal in df_f.columns else None
-        R = coerce_datetime(df_f[_resched]).dt.date   if _resched   and _resched   in df_f.columns else None
-        D = coerce_datetime(df_f[_done]).dt.date      if _done      and _done      in df_f.columns else None
-
-        def between_date(s, a, b):
-            return s.notna() & (s >= a) & (s <= b)
-
-        mask_created = between_date(C, range_start, range_end)
-        mask_paid    = between_date(P, range_start, range_end)
-
-        # Mode-aware masks
-        enrol_mask = (mask_created & mask_paid) if mode == "MTD" else mask_paid
-
-        first_mask = None
-        if F is not None:
-            f_in = between_date(F, range_start, range_end)
-            first_mask = (mask_created & f_in) if mode == "MTD" else f_in
-
-        resched_mask = None
-        if R is not None:
-            r_in = between_date(R, range_start, range_end)
-            resched_mask = (mask_created & r_in) if mode == "MTD" else r_in
-
-        done_mask = None
-        if D is not None:
-            d_in = between_date(D, range_start, range_end)
-            done_mask = (mask_created & d_in) if mode == "MTD" else d_in
-
-        def norm_cat(series):
-            return series.fillna("Unknown").astype(str).str.strip()
-
-        X = norm_cat(df_f[x_col])
-        Y = norm_cat(df_f[y_col])
-
-        # ---------- Filters with "All" for JLS / Counsellor ----------
-        x_vals_all = sorted(X.unique().tolist())
-        y_vals_all = sorted(Y.unique().tolist())
-
-        def add_all_option(label, values):
-            if label in {"JetLearn Deal Source", "Academic Counsellor"}:
-                opts = ["All"] + values
-                default = ["All"]
-                return opts, default
-            else:
-                return values, values  # others selected by default
-
-        x_options, x_default = add_all_option(x_label, x_vals_all)
-        y_options, y_default = add_all_option(y_label, y_vals_all)
-
-        f1, f2, f3 = st.columns([1.4, 1.4, 0.8])
-        with f1:
-            x_vals_sel = st.multiselect(f"Filter {x_label}", options=x_options, default=x_default, key="hm_xvals")
-        with f2:
-            y_vals_sel = st.multiselect(f"Filter {y_label}", options=y_options, default=y_default, key="hm_yvals")
-        with f3:
-            top_n = st.number_input("Top N per axis (0 = all)", min_value=0, max_value=200, value=0, step=1, key="hm_topn",
-                                    help="Apply after filters to keep the heatmap readable.")
-
-        if "All" in x_vals_sel:
-            x_vals_sel = x_vals_all
-        if "All" in y_vals_sel:
-            y_vals_sel = y_vals_all
-
-        base_mask = X.isin(x_vals_sel) & Y.isin(y_vals_sel)
-
-        # ---------- Build cell counts ----------
-        def _group_count(active_mask, name):
-            if active_mask is None or not active_mask.any():
-                return pd.DataFrame(columns=["X","Y",name])
-            df_tmp = pd.DataFrame({"X": X[base_mask & active_mask], "Y": Y[base_mask & active_mask]})
-            if df_tmp.empty:
-                return pd.DataFrame(columns=["X","Y",name])
-            return (
-                df_tmp.assign(_one=1)
-                      .groupby(["X","Y"], dropna=False)["_one"].sum()
-                      .rename(name)
-                      .reset_index()
-            )
-
-        created_ct = _group_count(mask_created, "Created")
-        enrol_ct   = _group_count(enrol_mask,   "Enrolments")
-        first_ct   = _group_count(first_mask,   "First Calibration Scheduled — Count")
-        resch_ct   = _group_count(resched_mask, "Calibration Rescheduled — Count")
-        done_ct    = _group_count(done_mask,    "Calibration Done — Count")
-
-        # Merge all metrics
-        grid = created_ct.merge(enrol_ct, on=["X","Y"], how="outer")
-        grid = grid.merge(first_ct, on=["X","Y"], how="outer")
-        grid = grid.merge(resch_ct, on=["X","Y"], how="outer")
-        grid = grid.merge(done_ct, on=["X","Y"], how="outer")
-
-        # Fill zeros, ints
-        for coln in ["Created","Enrolments",
-                     "First Calibration Scheduled — Count",
-                     "Calibration Rescheduled — Count",
-                     "Calibration Done — Count"]:
-            if coln not in grid.columns:
-                grid[coln] = 0
-        grid = grid.fillna(0)
-        for coln in ["Created","Enrolments",
-                     "First Calibration Scheduled — Count",
-                     "Calibration Rescheduled — Count",
-                     "Calibration Done — Count"]:
-            grid[coln] = grid[coln].astype(int)
-
-        # Derived ratio (Created / Enrolments %)
-        grid["Created / Enrolments %"] = np.where(
-            grid["Enrolments"] > 0, grid["Created"] / grid["Enrolments"] * 100.0, np.nan
-        )
-
-        # ---------- Top-N trimming (optional) ----------
-        if top_n and top_n > 0 and not grid.empty:
-            by_x = grid.groupby("X")["Enrolments"].sum().sort_values(ascending=False)
-            if (by_x == 0).all():
-                by_x = grid.groupby("X")["Created"].sum().sort_values(ascending=False)
-            top_x = by_x.head(top_n).index.tolist()
-
-            by_y = grid.groupby("Y")["Enrolments"].sum().sort_values(ascending=False)
-            if (by_y == 0).all():
-                by_y = grid.groupby("Y")["Created"].sum().sort_values(ascending=False)
-            top_y = by_y.head(top_n).index.tolist()
-
-            grid = grid[grid["X"].isin(top_x) & grid["Y"].isin(top_y)]
-
-        # ---------- Metric selection ----------
-        if metric == "Deals Created":
-            val_field = "Created"
-        elif metric == "Enrolments":
-            val_field = "Enrolments"
-        elif metric == "First Calibration Scheduled — Count":
-            val_field = "First Calibration Scheduled — Count"
-        elif metric == "Calibration Rescheduled — Count":
-            val_field = "Calibration Rescheduled — Count"
-        elif metric == "Calibration Done — Count":
-            val_field = "Calibration Done — Count"
-        else:
-            val_field = "Created / Enrolments %"
-
-        # ---------- NEW: Dynamic Top % subset ----------
-        t1, t2 = st.columns([1, 1.6])
-        with t1:
-            subset_mode = st.radio("Subset", ["All", "Top %"], index=0, horizontal=True, key="hm_subset_mode",
-                                   help=("Counts: minimal set of cells reaching ≤ your % of total (cumulative contribution). "
-                                         "Ratio: top N% rows by value."))
-        with t2:
-            top_pct = st.number_input("Enter % threshold", min_value=0.0, max_value=100.0, value=20.0, step=1.0, key="hm_pct",
-                                      help="Example: 7.5 = keep cells that make up ~7.5% of the total; for ratios keep top 7.5% rows by value.")
-
-        def _apply_top_percent(df, field, pct):
-            if df.empty or pct <= 0:
-                return df
-            if pct >= 100:
-                return df
-            if field.endswith("%"):
-                # Ratio: keep top N% rows by value
-                k = max(1, int(np.ceil((pct / 100.0) * len(df))))
-                return df.sort_values(field, ascending=False).head(k)
-            # Counts: contribution threshold (cumulative)
-            total = df[field].sum()
-            if total <= 0:
-                return df
-            tmp = df.sort_values(field, ascending=False).copy()
-            tmp["_cum_share"] = tmp[field].cumsum() / total * 100.0
-            out = tmp[tmp["_cum_share"] <= pct].drop(columns="_cum_share")
-            if out.empty and not tmp.empty:
-                out = tmp.head(1).drop(columns="_cum_share")
-            return out
-
-        grid_view = grid.copy()
-        if subset_mode == "Top %":
-            grid_view = _apply_top_percent(grid_view, val_field, top_pct)
-
-        # ---------- Output view ----------
-        view_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="hm_viewmode")
-
-        if grid_view.empty:
-            st.info("No data for the chosen filters/date range.")
-            return
-
-        if view_mode == "Graph":
-            if val_field.endswith("%"):
-                color_scale = alt.Scale(scheme="blues")
-                tooltip_fmt = ".1f"
-            else:
-                color_scale = alt.Scale(scheme="greens")
-                tooltip_fmt = "d"
-
-            ch = (
-                alt.Chart(grid_view)
-                .mark_rect()
-                .encode(
-                    x=alt.X("X:N", title=x_label, sort=sorted(grid_view["X"].unique().tolist())),
-                    y=alt.Y("Y:N", title=y_label, sort=sorted(grid_view["Y"].unique().tolist())),
-                    color=alt.Color(f"{val_field}:Q", scale=color_scale, title=val_field),
-                    tooltip=[
-                        alt.Tooltip("X:N", title=x_label),
-                        alt.Tooltip("Y:N", title=y_label),
-                        alt.Tooltip("Created:Q", title="Deals Created", format="d"),
-                        alt.Tooltip("Enrolments:Q", title="Enrolments", format="d"),
-                        alt.Tooltip("First Calibration Scheduled — Count:Q", title="First Cal Scheduled", format="d"),
-                        alt.Tooltip("Calibration Rescheduled — Count:Q", title="Cal Rescheduled", format="d"),
-                        alt.Tooltip("Calibration Done — Count:Q", title="Cal Done", format="d"),
-                        alt.Tooltip("Created / Enrolments %:Q", title="Created / Enrolments %", format=".1f"),
-                    ]
+            if highlight is not None and high_or_filter == "Highlight":
+                plot_df["_sel"] = highlight.loc[heat_df.index].astype(bool).values
+                ch = base.mark_rect().encode(
+                    color=alt.Color("Value:Q", title=metric_name, scale=alt.Scale(scheme="blues")),
+                    opacity=alt.condition("datum._sel", alt.value(1.0), alt.value(0.2))
                 )
-                .properties(
-                    height=420,
-                    title=f"Heatmap — {x_label} × {y_label} • Metric: {val_field} • Mode: {mode} • Subset: {subset_mode} {'' if subset_mode=='All' else f'({top_pct:.1f}%)'}"
+            else:
+                ch = base.mark_rect().encode(
+                    color=alt.Color("Value:Q", title=metric_name, scale=alt.Scale(scheme="blues"))
                 )
-            )
-            st.altair_chart(ch, use_container_width=True)
+
+            st.altair_chart(ch.properties(height=440), use_container_width=True)
+    else:
+        # Table
+        if heat_df.empty:
+            st.info("No rows for the chosen filters and window.")
         else:
-            show_tbl = grid_view.copy()
-            show_tbl["Created / Enrolments %"] = show_tbl["Created / Enrolments %"].round(1)
-            st.dataframe(show_tbl.sort_values([ "Y","X"]), use_container_width=True)
+            show_tbl = heat_df.rename(columns={
+                x_col: x_dim_lbl,
+                y_col: y_dim_lbl,
+                "Created": "Create Date (deals) — Count",
+                "Enrolments": "Payment Received Date — Count",
+                "FirstCal": "First Calibration Scheduled Date — Count",
+                "CalResch": "Calibration Rescheduled Date — Count",
+                "CalDone": "Calibration Done Date — Count",
+            })
+            # Column order: dims + all metrics
+            ordered_cols = [x_dim_lbl, y_dim_lbl,
+                            "Create Date (deals) — Count",
+                            "Payment Received Date — Count",
+                            "First Calibration Scheduled Date — Count",
+                            "Calibration Rescheduled Date — Count",
+                            "Calibration Done Date — Count",
+                            "Created/Enrolments %"]
+            show_tbl = show_tbl[ordered_cols]
+            st.dataframe(show_tbl, use_container_width=True)
             st.download_button(
-                "Download CSV — Heatmap data",
-                show_tbl.to_csv(index=False).encode("utf-8"),
-                "heatmap_data.csv", "text/csv",
-                key="hm_dl"
+                "Download CSV — Heatmap table",
+                data=show_tbl.to_csv(index=False).encode("utf-8"),
+                file_name="heatmap_table.csv",
+                mime="text/csv",
+                key="ht_dl_table"
             )
-
-        # ---------- Totals / rollups (over the current grid subset) ----------
-        st.markdown(
-            """
-            <style>
-              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 12px 14px; background: #ffffff; }
-              .kpi-title { font-size: 0.85rem; color: #6b7280; margin-bottom: 6px; }
-              .kpi-value { font-size: 1.6rem; font-weight: 700; }
-              .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        st.markdown("#### Totals (for displayed cells)")
-        cta, ctb, ctc, ctd = st.columns(4)
-        with cta:
-            tot_created = int(grid_view["Created"].sum())
-            st.markdown(
-                f"<div class='kpi-card'><div class='kpi-title'>Overall Deals Created</div>"
-                f"<div class='kpi-value'>{tot_created:,}</div>"
-                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
-                unsafe_allow_html=True
-            )
-        with ctb:
-            tot_enrol = int(grid_view["Enrolments"].sum())
-            st.markdown(
-                f"<div class='kpi-card'><div class='kpi-title'>Overall Enrolments</div>"
-                f"<div class='kpi-value'>{tot_enrol:,}</div>"
-                f"<div class='kpi-sub'>Mode: {mode}</div></div>",
-                unsafe_allow_html=True
-            )
-        with ctc:
-            tot_first = int(grid_view["First Calibration Scheduled — Count"].sum())
-            st.markdown(
-                f"<div class='kpi-card'><div class='kpi-title'>First Cal Scheduled (Total)</div>"
-                f"<div class='kpi-value'>{tot_first:,}</div>"
-                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
-                unsafe_allow_html=True
-            )
-        with ctd:
-            tot_done = int(grid_view["Calibration Done — Count"].sum())
-            st.markdown(
-                f"<div class='kpi-card'><div class='kpi-title'>Calibration Done (Total)</div>"
-                f"<div class='kpi-value'>{tot_done:,}</div>"
-                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
-                unsafe_allow_html=True
-            )
-
-        # Missing column hint
-        missing = []
-        if _first_cal is None or _first_cal not in df_f.columns: missing.append("First Calibration Scheduled Date")
-        if _resched   is None or _resched   not in df_f.columns: missing.append("Calibration Rescheduled Date")
-        if _done      is None or _done      not in df_f.columns: missing.append("Calibration Done Date")
-        if missing:
-            st.info("Missing columns: " + ", ".join(missing) + ". These counts show as 0.", icon="ℹ️")
-
-    # run the tab
-    _heatmap_tab()
