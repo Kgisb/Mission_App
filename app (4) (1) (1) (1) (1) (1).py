@@ -4697,10 +4697,22 @@ elif view == "Bubble Explorer":
                 help="Quick ranges (inclusive). Use Custom for any date span."
             )
         with col_top3:
-            # axis choices & metric configuration
+            # metric lists now include derived metrics too
+            metric_options = [
+                "Enrolments",
+                "Deals Created",
+                "First Calibration Scheduled — Count",
+                "Calibration Rescheduled — Count",
+                "Calibration Done — Count",
+                # ---- derived (NEW) ----
+                "Enrolments / Deals Created %",
+                "Enrolments / Calibration Done %",
+                "Calibration Done / First Scheduled %",
+                "First Scheduled / Deals Created %",
+            ]
             size_metric = st.selectbox(
                 "Bubble size by",
-                ["Enrolments", "Deals Created", "First Calibration Scheduled — Count", "Calibration Rescheduled — Count", "Calibration Done — Count"],
+                metric_options,
                 index=0,
                 help="Determines relative bubble size."
             )
@@ -4709,13 +4721,12 @@ elif view == "Bubble Explorer":
         if time_preset == "Last month":
             start_d, end_d = last_month_bounds(today_d)
         elif time_preset == "Last 3 months":
-            # from the 1st of (today - 2 months) to end of current month
             mstart, _ = month_bounds(today_d)
-            start_d = (mstart - pd.offsets.MonthBegin(2)).date()  # first day 2 months before current month
+            start_d = (mstart - pd.offsets.MonthBegin(2)).date()
             end_d   = month_bounds(today_d)[1]
         elif time_preset == "Last 12 months":
             mstart, _ = month_bounds(today_d)
-            start_d = (mstart - pd.offsets.MonthBegin(11)).date()  # first day 11 months before current month
+            start_d = (mstart - pd.offsets.MonthBegin(11)).date()
             end_d   = month_bounds(today_d)[1]
         else:
             d1, d2 = st.columns(2)
@@ -4828,6 +4839,20 @@ elif view == "Bubble Explorer":
         for coln in ["Deals Created","Enrolments","First Calibration Scheduled — Count","Calibration Rescheduled — Count","Calibration Done — Count"]:
             bub[coln] = bub[coln].astype(int)
 
+        # ---------- Derived metrics (NEW) ----------
+        bub["Enrolments / Deals Created %"] = np.where(
+            bub["Deals Created"] > 0, bub["Enrolments"] / bub["Deals Created"] * 100.0, np.nan
+        )
+        bub["Enrolments / Calibration Done %"] = np.where(
+            bub["Calibration Done — Count"] > 0, bub["Enrolments"] / bub["Calibration Done — Count"] * 100.0, np.nan
+        )
+        bub["Calibration Done / First Scheduled %"] = np.where(
+            bub["First Calibration Scheduled — Count"] > 0, bub["Calibration Done — Count"] / bub["First Calibration Scheduled — Count"] * 100.0, np.nan
+        )
+        bub["First Scheduled / Deals Created %"] = np.where(
+            bub["Deals Created"] > 0, bub["First Calibration Scheduled — Count"] / bub["Deals Created"] * 100.0, np.nan
+        )
+
         # ---------- Chart configuration ----------
         c1, c2, c3 = st.columns([1.0, 1.0, 0.9])
         with c1:
@@ -4837,7 +4862,18 @@ elif view == "Bubble Explorer":
         with c3:
             color_metric = st.selectbox(
                 "Bubble color by",
-                ["Enrolments", "Deals Created", "First Calibration Scheduled — Count", "Calibration Rescheduled — Count", "Calibration Done — Count"],
+                [
+                    "Enrolments",
+                    "Deals Created",
+                    "First Calibration Scheduled — Count",
+                    "Calibration Rescheduled — Count",
+                    "Calibration Done — Count",
+                    # ---- derived (NEW) ----
+                    "Enrolments / Deals Created %",
+                    "Enrolments / Calibration Done %",
+                    "Calibration Done / First Scheduled %",
+                    "First Scheduled / Deals Created %",
+                ],
                 index=1,
                 help="Color encodes another metric for the same bubble."
             )
@@ -4865,7 +4901,8 @@ elif view == "Bubble Explorer":
         # Sort and trim by chosen size metric
         bub_view = bub.copy()
         if top_n and top_n > 0:
-            bub_view = bub_view.sort_values(size_field, ascending=False).head(top_n)
+            # Sort NaNs last to avoid losing real rows
+            bub_view = bub_view.sort_values(size_field, ascending=False, na_position="last").head(top_n)
 
         if bub_view.empty:
             st.info("No data for the chosen filters/date range.")
@@ -4873,10 +4910,8 @@ elif view == "Bubble Explorer":
 
         # ---------- Render ----------
         if view_mode == "Graph":
-            # altair bubble chart
             # scale bubble size for readability
-            max_size_val = max(1, bub_view[size_field].max())
-            size_scale = alt.Scale(range=[30, 1500])  # adjust visual range
+            size_scale = alt.Scale(range=[30, 1500])  # visual range
 
             chart = (
                 alt.Chart(bub_view)
@@ -4894,16 +4929,29 @@ elif view == "Bubble Explorer":
                         alt.Tooltip("Calibration Rescheduled — Count:Q"),
                         alt.Tooltip("Calibration Done — Count:Q"),
                         alt.Tooltip("Enrolments:Q"),
+                        # derived in tooltip (rounded)
+                        alt.Tooltip("Enrolments / Deals Created %:Q", title="Enrolments / Created %", format=".1f"),
+                        alt.Tooltip("Enrolments / Calibration Done %:Q", title="Enrolments / Cal Done %", format=".1f"),
+                        alt.Tooltip("Calibration Done / First Scheduled %:Q", title="Cal Done / First Sched %", format=".1f"),
+                        alt.Tooltip("First Scheduled / Deals Created %:Q", title="First Sched / Created %", format=".1f"),
                     ],
                 )
                 .properties(height=520, title=f"Bubble view • Size: {size_field} • Color: {color_field} • Mode: {mode}")
             )
             st.altair_chart(chart, use_container_width=True)
         else:
-            st.dataframe(bub_view.sort_values([size_field, color_field], ascending=[False, False]), use_container_width=True)
+            tbl = bub_view.copy()
+            for coln in [
+                "Enrolments / Deals Created %",
+                "Enrolments / Calibration Done %",
+                "Calibration Done / First Scheduled %",
+                "First Scheduled / Deals Created %",
+            ]:
+                tbl[coln] = tbl[coln].round(1)
+            st.dataframe(tbl.sort_values([size_field, color_field], ascending=[False, False]), use_container_width=True)
             st.download_button(
                 "Download CSV — Bubble Explorer data",
-                bub_view.to_csv(index=False).encode("utf-8"),
+                tbl.to_csv(index=False).encode("utf-8"),
                 "bubble_explorer_data.csv",
                 "text/csv",
                 key="bx_dl"
