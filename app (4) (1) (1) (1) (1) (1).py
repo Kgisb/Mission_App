@@ -4250,7 +4250,7 @@ elif view == "Referrals":
     # call the tab
     _referrals_tab()
 # =========================
-# Heatmap Tab (full, with "All" in filters + Created/Enrolments % metric)
+# Heatmap Tab (full, with "All" in filters + Created/Enrolments % + calibration counts)
 # =========================
 elif view == "Heatmap":
     def _heatmap_tab():
@@ -4265,6 +4265,11 @@ elif view == "Heatmap":
         _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
         _sib    = find_col(df_f, ["Sibling Deal","Sibling deal","Sibling"])
 
+        # NEW: calibration columns
+        _first_cal = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
+        _resched   = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
+        _done      = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
+
         if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
             st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
             return
@@ -4273,8 +4278,8 @@ elif view == "Heatmap":
         col_top1, col_top2 = st.columns([1.1, 1.4])
         with col_top1:
             mode = st.radio("Mode", ["MTD", "Cohort"], index=1, horizontal=True, key="hm_mode",
-                            help=("MTD: Enrolments counted only if the deal was also created in the window. "
-                                  "Cohort: Enrolments counted by payment date regardless of create month."))
+                            help=("MTD: Enrolments / events counted only if the deal was also created in the window. "
+                                  "Cohort: Enrolments / events counted by their own date regardless of create month."))
         with col_top2:
             scope = st.radio("Date scope", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="hm_dscope")
 
@@ -4304,7 +4309,7 @@ elif view == "Heatmap":
             st.info("Need at least two categorical columns (e.g., Deal Source and Country) to draw a heatmap.")
             return
 
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.1])
+        c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
         with c1:
             x_label = st.selectbox("X axis (categories)", list(dim_options.keys()), index=0, key="hm_x")
         with c2:
@@ -4316,7 +4321,10 @@ elif view == "Heatmap":
                 [
                     "Deals Created",
                     "Enrolments",
-                    "Created / Enrolments %",   # <-- only this ratio per your request
+                    "First Calibration Scheduled — Count",
+                    "Calibration Rescheduled — Count",
+                    "Calibration Done — Count",
+                    "Created / Enrolments %",   # ratio (only this one)
                 ],
                 index=1,
                 key="hm_metric",
@@ -4329,6 +4337,9 @@ elif view == "Heatmap":
         # ---------- Normalize/prepare base series ----------
         C = coerce_datetime(df_f[_create]).dt.date
         P = coerce_datetime(df_f[_pay]).dt.date
+        F = coerce_datetime(df_f[_first_cal]).dt.date if _first_cal and _first_cal in df_f.columns else None
+        R = coerce_datetime(df_f[_resched]).dt.date   if _resched   and _resched   in df_f.columns else None
+        D = coerce_datetime(df_f[_done]).dt.date      if _done      and _done      in df_f.columns else None
 
         def between_date(s, a, b):
             return s.notna() & (s >= a) & (s <= b)
@@ -4336,7 +4347,23 @@ elif view == "Heatmap":
         mask_created = between_date(C, range_start, range_end)
         mask_paid    = between_date(P, range_start, range_end)
 
+        # Mode-aware masks
         enrol_mask = (mask_created & mask_paid) if mode == "MTD" else mask_paid
+
+        first_mask = None
+        if F is not None:
+            f_in = between_date(F, range_start, range_end)
+            first_mask = (mask_created & f_in) if mode == "MTD" else f_in
+
+        resched_mask = None
+        if R is not None:
+            r_in = between_date(R, range_start, range_end)
+            resched_mask = (mask_created & r_in) if mode == "MTD" else r_in
+
+        done_mask = None
+        if D is not None:
+            d_in = between_date(D, range_start, range_end)
+            done_mask = (mask_created & d_in) if mode == "MTD" else d_in
 
         def norm_cat(series):
             return series.fillna("Unknown").astype(str).str.strip()
@@ -4345,18 +4372,16 @@ elif view == "Heatmap":
         Y = norm_cat(df_f[y_col])
 
         # ---------- Filters with "All" for JLS / Counsellor ----------
-        # Build options and defaults
         x_vals_all = sorted(X.unique().tolist())
         y_vals_all = sorted(Y.unique().tolist())
 
         def add_all_option(label, values):
-            """Return (options, default_selection) with 'All' preselected only for specific labels."""
             if label in {"JetLearn Deal Source", "Academic Counsellor"}:
                 opts = ["All"] + values
                 default = ["All"]  # preselected
                 return opts, default
             else:
-                return values, values  # normal behavior: all selected
+                return values, values  # others: select all by default
 
         x_options, x_default = add_all_option(x_label, x_vals_all)
         y_options, y_default = add_all_option(y_label, y_vals_all)
@@ -4370,7 +4395,6 @@ elif view == "Heatmap":
             top_n = st.number_input("Top N per axis (0 = all)", min_value=0, max_value=200, value=0, step=1, key="hm_topn",
                                     help="Apply after filters to keep the heatmap readable.")
 
-        # Expand "All" to full value lists where applicable
         if "All" in x_vals_sel:
             x_vals_sel = x_vals_all
         if "All" in y_vals_sel:
@@ -4379,32 +4403,49 @@ elif view == "Heatmap":
         base_mask = X.isin(x_vals_sel) & Y.isin(y_vals_sel)
 
         # ---------- Build cell counts ----------
-        created_df = pd.DataFrame({
-            "X": X[base_mask & mask_created],
-            "Y": Y[base_mask & mask_created],
-        })
-        created_ct = (created_df
-                      .assign(_one=1)
+        def _group_count(active_mask, name):
+            if active_mask is None or not active_mask.any():
+                return pd.DataFrame(columns=["X","Y",name])
+            df_tmp = pd.DataFrame({"X": X[base_mask & active_mask], "Y": Y[base_mask & active_mask]})
+            if df_tmp.empty:
+                return pd.DataFrame(columns=["X","Y",name])
+            return (
+                df_tmp.assign(_one=1)
                       .groupby(["X","Y"], dropna=False)["_one"].sum()
-                      .rename("Created")
-                      .reset_index()) if not created_df.empty else pd.DataFrame(columns=["X","Y","Created"])
+                      .rename(name)
+                      .reset_index()
+            )
 
-        enrol_df = pd.DataFrame({
-            "X": X[base_mask & enrol_mask],
-            "Y": Y[base_mask & enrol_mask],
-        })
-        enrol_ct = (enrol_df
-                    .assign(_one=1)
-                    .groupby(["X","Y"], dropna=False)["_one"].sum()
-                    .rename("Enrolments")
-                    .reset_index()) if not enrol_df.empty else pd.DataFrame(columns=["X","Y","Enrolments"])
+        created_ct = _group_count(mask_created, "Created")
+        enrol_ct   = _group_count(enrol_mask,   "Enrolments")
+        first_ct   = _group_count(first_mask,   "First Calibration Scheduled — Count")
+        resch_ct   = _group_count(resched_mask, "Calibration Rescheduled — Count")
+        done_ct    = _group_count(done_mask,    "Calibration Done — Count")
 
-        grid = created_ct.merge(enrol_ct, on=["X","Y"], how="outer").fillna(0)
-        grid["Created"] = grid["Created"].astype(int)
-        grid["Enrolments"] = grid["Enrolments"].astype(int)
+        # Merge all metrics
+        grid = created_ct.merge(enrol_ct, on=["X","Y"], how="outer")
+        grid = grid.merge(first_ct, on=["X","Y"], how="outer")
+        grid = grid.merge(resch_ct, on=["X","Y"], how="outer")
+        grid = grid.merge(done_ct, on=["X","Y"], how="outer")
 
-        # Derived metric (only Created/Enrolments %)
-        grid["Created / Enrolments %"] = np.where(grid["Enrolments"] > 0, grid["Created"] / grid["Enrolments"] * 100.0, np.nan)
+        # Fill zeros, ints
+        for coln in ["Created","Enrolments",
+                     "First Calibration Scheduled — Count",
+                     "Calibration Rescheduled — Count",
+                     "Calibration Done — Count"]:
+            if coln not in grid.columns:
+                grid[coln] = 0
+        grid = grid.fillna(0)
+        for coln in ["Created","Enrolments",
+                     "First Calibration Scheduled — Count",
+                     "Calibration Rescheduled — Count",
+                     "Calibration Done — Count"]:
+            grid[coln] = grid[coln].astype(int)
+
+        # Derived ratio
+        grid["Created / Enrolments %"] = np.where(
+            grid["Enrolments"] > 0, grid["Created"] / grid["Enrolments"] * 100.0, np.nan
+        )
 
         # ---------- Top-N trimming (optional) ----------
         if top_n and top_n > 0 and not grid.empty:
@@ -4427,8 +4468,19 @@ elif view == "Heatmap":
             st.info("No data for the chosen filters/date range.")
             return
 
-        val_field = "Created" if metric == "Deals Created" else \
-                    "Enrolments" if metric == "Enrolments" else "Created / Enrolments %"
+        # Map metric to field
+        if metric == "Deals Created":
+            val_field = "Created"
+        elif metric == "Enrolments":
+            val_field = "Enrolments"
+        elif metric == "First Calibration Scheduled — Count":
+            val_field = "First Calibration Scheduled — Count"
+        elif metric == "Calibration Rescheduled — Count":
+            val_field = "Calibration Rescheduled — Count"
+        elif metric == "Calibration Done — Count":
+            val_field = "Calibration Done — Count"
+        else:
+            val_field = "Created / Enrolments %"
 
         if view_mode == "Graph":
             if val_field.endswith("%"):
@@ -4450,6 +4502,9 @@ elif view == "Heatmap":
                         alt.Tooltip("Y:N", title=y_label),
                         alt.Tooltip("Created:Q", title="Deals Created", format="d"),
                         alt.Tooltip("Enrolments:Q", title="Enrolments", format="d"),
+                        alt.Tooltip("First Calibration Scheduled — Count:Q", title="First Cal Scheduled", format="d"),
+                        alt.Tooltip("Calibration Rescheduled — Count:Q", title="Cal Rescheduled", format="d"),
+                        alt.Tooltip("Calibration Done — Count:Q", title="Cal Done", format="d"),
                         alt.Tooltip("Created / Enrolments %:Q", title="Created / Enrolments %", format=".1f"),
                     ]
                 )
@@ -4483,7 +4538,7 @@ elif view == "Heatmap":
             unsafe_allow_html=True
         )
         st.markdown("#### Totals")
-        cta, ctb = st.columns(2)
+        cta, ctb, ctc, ctd = st.columns(4)
         with cta:
             tot_created = int(grid["Created"].sum())
             st.markdown(
@@ -4500,6 +4555,30 @@ elif view == "Heatmap":
                 f"<div class='kpi-sub'>Mode: {mode}</div></div>",
                 unsafe_allow_html=True
             )
+        with ctc:
+            tot_first = int(grid["First Calibration Scheduled — Count"].sum())
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>First Cal Scheduled (Total)</div>"
+                f"<div class='kpi-value'>{tot_first:,}</div>"
+                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
+                unsafe_allow_html=True
+            )
+        with ctd:
+            tot_done = int(grid["Calibration Done — Count"].sum())
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Calibration Done (Total)</div>"
+                f"<div class='kpi-value'>{tot_done:,}</div>"
+                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>",
+                unsafe_allow_html=True
+            )
+
+        # Missing column hint
+        missing = []
+        if _first_cal is None or _first_cal not in df_f.columns: missing.append("First Calibration Scheduled Date")
+        if _resched   is None or _resched   not in df_f.columns: missing.append("Calibration Rescheduled Date")
+        if _done      is None or _done      not in df_f.columns: missing.append("Calibration Done Date")
+        if missing:
+            st.info("Missing columns: " + ", ".join(missing) + ". These counts show as 0.", icon="ℹ️")
 
     # run the tab
     _heatmap_tab()
