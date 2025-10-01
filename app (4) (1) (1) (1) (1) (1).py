@@ -167,7 +167,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
+        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Stage", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -5586,3 +5586,361 @@ elif view == "Sales Tracker":
 
     # run it
     _sales_tracker_tab()
+# =========================
+# Deal Stage Tab (full)
+# =========================
+elif view == "Deal Stage":
+    def _deal_stage_tab():
+        st.subheader("Deal Stage — Volume & Velocity (MTD / Cohort)")
+
+        # ---------- Resolve key columns (defensive) ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+        _pay    = pay_col    if (pay_col    in df_f.columns) else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
+        _first  = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
+        _resch  = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
+        _done   = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
+
+        _cty    = country_col    if (country_col    in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+        _src    = source_col     if (source_col     in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cns    = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
+
+        if not _create or _create not in df_f.columns:
+            st.warning("Create Date column is required for this view.", icon="⚠️"); st.stop()
+
+        # ---------- Controls ----------
+        col_top1, col_top2, col_top3 = st.columns([1.2, 1.2, 1.4])
+        with col_top1:
+            mode = st.radio(
+                "Mode",
+                ["MTD", "Cohort"],
+                index=1,
+                horizontal=True,
+                key="stage_mode",
+                help=("MTD: count a stage only if its own date is in-range AND the deal was created in-range. "
+                      "Cohort: count by the stage's own date, regardless of create month.")
+            )
+        with col_top2:
+            scope = st.radio(
+                "Date scope",
+                ["This month", "Last month", "Custom"],
+                index=0,
+                horizontal=True,
+                key="stage_dscope"
+            )
+        with col_top3:
+            agg_view = st.radio(
+                "Time grain",
+                ["Month-on-Month", "Day-wise"],
+                index=0,
+                horizontal=True,
+                key="stage_grain"
+            )
+
+        today_d = date.today()
+        if scope == "This month":
+            range_start, range_end = month_bounds(today_d)
+        elif scope == "Last month":
+            range_start, range_end = last_month_bounds(today_d)
+        else:
+            c1, c2 = st.columns(2)
+            with c1: range_start = st.date_input("Start date", value=today_d.replace(day=1), key="stage_start")
+            with c2: range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="stage_end")
+            if range_end < range_start:
+                st.error("End date cannot be before start date.")
+                st.stop()
+        st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}** • Grain: **{agg_view}**")
+
+        # ---------- Optional filters (+ 'All') ----------
+        def norm_cat(s):
+            return s.fillna("Unknown").astype(str).str.strip()
+
+        if _cty and _cty in df_f.columns:
+            cty_vals_all = sorted(norm_cat(df_f[_cty]).unique().tolist())
+            cty_opts = ["All"] + cty_vals_all
+            cty_sel = st.multiselect("Filter Country", options=cty_opts, default=["All"], key="stage_cty")
+        else:
+            cty_vals_all, cty_sel = [], []
+
+        if _src and _src in df_f.columns:
+            src_vals_all = sorted(norm_cat(df_f[_src]).unique().tolist())
+            src_opts = ["All"] + src_vals_all
+            src_sel = st.multiselect("Filter JetLearn Deal Source", options=src_opts, default=["All"], key="stage_src")
+        else:
+            src_vals_all, src_sel = [], []
+
+        if _cns and _cns in df_f.columns:
+            cns_vals_all = sorted(norm_cat(df_f[_cns]).unique().tolist())
+            cns_opts = ["All"] + cns_vals_all
+            cns_sel = st.multiselect("Filter Academic Counsellor", options=cns_opts, default=["All"], key="stage_cns")
+        else:
+            cns_vals_all, cns_sel = [], []
+
+        # Apply 'All' behavior
+        def _apply_multi_all(series, sel, all_vals):
+            if not sel or "All" in sel:  # no filter
+                return pd.Series(True, index=series.index)
+            return norm_cat(series).isin(sel)
+
+        mask_cty = _apply_multi_all(df_f[_cty] if _cty else pd.Series("Unknown", index=df_f.index), cty_sel, cty_vals_all)
+        mask_src = _apply_multi_all(df_f[_src] if _src else pd.Series("Unknown", index=df_f.index), src_sel, src_vals_all)
+        mask_cns = _apply_multi_all(df_f[_cns] if _cns else pd.Series("Unknown", index=df_f.index), cns_sel, cns_vals_all)
+
+        filt_mask = mask_cty & mask_src & mask_cns
+
+        # ---------- Normalize datetime series ----------
+        C = coerce_datetime(df_f[_create]).dt.date
+        F = coerce_datetime(df_f[_first]).dt.date if _first else None
+        R = coerce_datetime(df_f[_resch]).dt.date if _resch else None
+        D = coerce_datetime(df_f[_done]).dt.date  if _done  else None
+        P = coerce_datetime(df_f[_pay]).dt.date   if _pay   else None
+
+        def between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
+
+        mask_created_in = between_date(C, range_start, range_end)
+        # Mode-aware per-stage inclusion
+        def stage_mask(stage_series):
+            if stage_series is None:
+                return pd.Series(False, index=df_f.index)
+            in_range = between_date(stage_series, range_start, range_end)
+            return (in_range & mask_created_in) if (mode == "MTD") else in_range
+
+        m_create = stage_mask(C)                    # Created
+        m_first  = stage_mask(F) if F is not None else pd.Series(False, index=df_f.index)
+        m_resch  = stage_mask(R) if R is not None else pd.Series(False, index=df_f.index)
+        m_done   = stage_mask(D) if D is not None else pd.Series(False, index=df_f.index)
+        m_enrol  = stage_mask(P) if P is not None else pd.Series(False, index=df_f.index)
+
+        # Apply global filters
+        m_create &= filt_mask
+        if F is not None: m_first &= filt_mask
+        if R is not None: m_resch &= filt_mask
+        if D is not None: m_done  &= filt_mask
+        if P is not None: m_enrol &= filt_mask
+
+        # ---------- KPI strip ----------
+        st.markdown(
+            """
+            <style>
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
+              .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
+              .kpi-value { font-size: 1.4rem; font-weight: 700; }
+              .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        k1,k2,k3,k4,k5 = st.columns(5)
+        with k1:
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Deals Created</div><div class='kpi-value'>{int(m_create.sum()):,}</div><div class='kpi-sub'>{range_start} → {range_end}</div></div>", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>First Cal Scheduled</div><div class='kpi-value'>{int(m_first.sum()) if F is not None else 0:,}</div><div class='kpi-sub'>{'—' if not _first else _first}</div></div>", unsafe_allow_html=True)
+        with k3:
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Cal Rescheduled</div><div class='kpi-value'>{int(m_resch.sum()) if R is not None else 0:,}</div><div class='kpi-sub'>{'—' if not _resch else _resch}</div></div>", unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Cal Done</div><div class='kpi-value'>{int(m_done.sum()) if D is not None else 0:,}</div><div class='kpi-sub'>{'—' if not _done else _done}</div></div>", unsafe_allow_html=True)
+        with k5:
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Enrolments</div><div class='kpi-value'>{int(m_enrol.sum()) if P is not None else 0:,}</div><div class='kpi-sub'>Mode: {mode}</div></div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ---------- Build long event frame for charts ----------
+        long_rows = []
+        def _append(stage_name, series, mask):
+            if series is None: return
+            if mask.any():
+                tmp = pd.DataFrame({"Date": series[mask]})
+                tmp["Stage"] = stage_name
+                long_rows.append(tmp)
+
+        _append("Deal Created", C, m_create)
+        if F is not None: _append("First Calibration Scheduled", F, m_first)
+        if R is not None: _append("Calibration Rescheduled", R, m_resch)
+        if D is not None: _append("Calibration Done", D, m_done)
+        if P is not None: _append("Enrolment", P, m_enrol)
+
+        long_df = pd.concat(long_rows, ignore_index=True) if long_rows else pd.DataFrame(columns=["Date","Stage"])
+        if not long_df.empty:
+            long_df["Date"] = pd.to_datetime(long_df["Date"])
+
+        # ---------- Charts: MoM or Day-wise ----------
+        if long_df.empty:
+            st.info("No stage events match the selected filters/date range.")
+        else:
+            view_mode = st.radio("View as", ["Graph", "Table"], horizontal=True, key="stage_viewmode")
+
+            if agg_view == "Month-on-Month":
+                long_df["_m"] = long_df["Date"].dt.to_period("M")
+                agg_tbl = (long_df.groupby(["_m","Stage"]).size()
+                                   .rename("Count").reset_index())
+                agg_tbl["Month"] = agg_tbl["_m"].astype(str)
+                agg_tbl = agg_tbl[["Month","Stage","Count"]]
+
+                if view_mode == "Graph":
+                    ch = (
+                        alt.Chart(agg_tbl)
+                        .mark_bar(opacity=0.9)
+                        .encode(
+                            x=alt.X("Month:N", sort=sorted(agg_tbl["Month"].unique().tolist())),
+                            y=alt.Y("Count:Q", title="Count"),
+                            color=alt.Color("Stage:N", legend=alt.Legend(orient="bottom")),
+                            tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Stage:N"), alt.Tooltip("Count:Q")]
+                        )
+                        .properties(height=360, title="MoM — Stage Volumes (stacked)")
+                    )
+                    st.altair_chart(ch, use_container_width=True)
+                else:
+                    pivot = agg_tbl.pivot(index="Month", columns="Stage", values="Count").fillna(0).astype(int).reset_index()
+                    st.dataframe(pivot, use_container_width=True)
+                    st.download_button(
+                        "Download CSV — MoM Stage Volumes",
+                        pivot.to_csv(index=False).encode("utf-8"),
+                        "deal_stage_mom.csv", "text/csv", key="stage_dl_mom"
+                    )
+            else:
+                # Day-wise
+                long_df["Day"] = long_df["Date"].dt.date
+                agg_tbl = (long_df.groupby(["Day","Stage"]).size()
+                                   .rename("Count").reset_index())
+
+                if view_mode == "Graph":
+                    ch = (
+                        alt.Chart(agg_tbl)
+                        .mark_bar(opacity=0.9)
+                        .encode(
+                            x=alt.X("Day:T", title="Day"),
+                            y=alt.Y("Count:Q", title="Count"),
+                            color=alt.Color("Stage:N", legend=alt.Legend(orient="bottom")),
+                            tooltip=[alt.Tooltip("Day:T"), alt.Tooltip("Stage:N"), alt.Tooltip("Count:Q")]
+                        )
+                        .properties(height=360, title="Day-wise — Stage Volumes (stacked)")
+                    )
+                    st.altair_chart(ch, use_container_width=True)
+                else:
+                    pivot = agg_tbl.pivot(index="Day", columns="Stage", values="Count").fillna(0).astype(int).reset_index()
+                    st.dataframe(pivot, use_container_width=True)
+                    st.download_button(
+                        "Download CSV — Day-wise Stage Volumes",
+                        pivot.to_csv(index=False).encode("utf-8"),
+                        "deal_stage_daywise.csv", "text/csv", key="stage_dl_day"
+                    )
+
+        st.markdown("---")
+
+        # ---------- Velocity (time between stages) ----------
+        st.markdown("### Velocity — Time Between Stages")
+        trans_pairs = [
+            ("Deal Created", "First Calibration Scheduled", _create, _first),
+            ("First Calibration Scheduled", "Calibration Done", _first, _done),
+            ("Deal Created", "Enrolment", _create, _pay),
+            ("First Calibration Scheduled", "Calibration Rescheduled", _first, _resch),
+        ]
+        # Allow user to pick a pair
+        valid_pairs = [(a,b) for (a,b,fc,tc) in trans_pairs if fc and tc and fc in df_f.columns and tc in df_f.columns]
+        pair_labels = [f"{a} → {b}" for (a,b) in valid_pairs]
+        if not pair_labels:
+            st.info("Not enough stage date columns to compute velocity (need at least a valid from/to pair).")
+            st.stop()
+        pick = st.selectbox("Pick a transition", pair_labels, index=0, key="stage_pair")
+
+        from_label, to_label = valid_pairs[pair_labels.index(pick)]
+        # Get actual column names for the chosen pair
+        col_map = {
+            "Deal Created": _create,
+            "First Calibration Scheduled": _first,
+            "Calibration Rescheduled": _resch,
+            "Calibration Done": _done,
+            "Enrolment": _pay,
+        }
+        from_col = col_map[from_label]
+        to_col   = col_map[to_label]
+
+        # Build masks per mode for the TO event (what belongs to this window),
+        # then compute deltas only for rows that pass global filters + this window.
+        from_dt = coerce_datetime(df_f[from_col])
+        to_dt   = coerce_datetime(df_f[to_col])
+
+        # Mode window for "to" event
+        to_in = between_date(to_dt.dt.date, range_start, range_end)
+        window_mask = (to_in & mask_created_in) if (mode == "MTD") else to_in
+
+        # Apply global filters too
+        window_mask &= filt_mask
+
+        d_use = df_f.loc[window_mask, [from_col, to_col]].copy()
+        # Ensure datetime
+        d_use["__from"] = coerce_datetime(d_use[from_col])
+        d_use["__to"]   = coerce_datetime(d_use[to_col])
+
+        # Keep only rows where both sides exist and to >= from
+        good = d_use["__from"].notna() & d_use["__to"].notna()
+        d_use = d_use.loc[good].copy()
+        if not d_use.empty:
+            d_use["__days"] = (d_use["__to"] - d_use["__from"]).dt.days
+            d_use = d_use[d_use["__days"] >= 0]
+
+        if d_use.empty:
+            st.info("No valid transitions in the selected window/filters to compute velocity.")
+        else:
+            mu = float(np.mean(d_use["__days"]))
+            sigma = float(np.std(d_use["__days"], ddof=0))
+            med = float(np.median(d_use["__days"]))
+            p95 = float(np.percentile(d_use["__days"], 95))
+
+            kpa, kpb, kpc, kpd = st.columns(4)
+            with kpa:
+                st.markdown(f"<div class='kpi-card'><div class='kpi-title'>μ (Average days)</div><div class='kpi-value'>{mu:.1f}</div><div class='kpi-sub'>{from_label} → {to_label}</div></div>", unsafe_allow_html=True)
+            with kpb:
+                st.markdown(f"<div class='kpi-card'><div class='kpi-title'>σ (Std dev)</div><div class='kpi-value'>{sigma:.1f}</div><div class='kpi-sub'>Population σ</div></div>", unsafe_allow_html=True)
+            with kpc:
+                st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Median</div><div class='kpi-value'>{med:.1f}</div><div class='kpi-sub'>Days</div></div>", unsafe_allow_html=True)
+            with kpd:
+                st.markdown(f"<div class='kpi-card'><div class='kpi-title'>p95</div><div class='kpi-value'>{p95:.1f}</div><div class='kpi-sub'>Days</div></div>", unsafe_allow_html=True)
+
+            # Bell curve toggle
+            vmode = st.radio("Velocity view", ["Histogram + Bell curve", "Table"], index=0, horizontal=True, key="stage_vel_view")
+            if vmode == "Histogram + Bell curve":
+                # Histogram data
+                hist_df = d_use[["__days"]].rename(columns={"__days":"Days"}).copy()
+
+                # Build normal curve points (x from 0 to max(p95*1.2, max))
+                x_max = max(hist_df["Days"].max(), p95) * 1.2
+                x_vals = np.linspace(0, max(1, x_max), 200)
+                # Normal PDF scaled to counts (area under histogram approx)
+                # Get approximate scale: total count * bin width ~ area
+                binw = max(1, round(hist_df["Days"].max() / 20))  # coarse
+                pdf = (1.0/(sigma if sigma>0 else 1.0)/np.sqrt(2*np.pi)) * np.exp(-(x_vals - mu)**2/(2*(sigma if sigma>0 else 1.0)**2))
+                scale = len(hist_df) * binw
+                curve_df = pd.DataFrame({"Days": x_vals, "ScaledPDF": pdf * scale})
+
+                ch_hist = (
+                    alt.Chart(hist_df)
+                    .mark_bar(opacity=0.85)
+                    .encode(
+                        x=alt.X("Days:Q", bin=alt.Bin(maxbins=30), title="Days"),
+                        y=alt.Y("count():Q", title="Count"),
+                        tooltip=[alt.Tooltip("count():Q", title="Count")]
+                    )
+                    .properties(height=320, title=f"Velocity: {from_label} → {to_label}")
+                )
+                ch_curve = (
+                    alt.Chart(curve_df)
+                    .mark_line()
+                    .encode(
+                        x=alt.X("Days:Q"),
+                        y=alt.Y("ScaledPDF:Q", title="Count"),
+                        tooltip=[alt.Tooltip("Days:Q"), alt.Tooltip("ScaledPDF:Q", title="Scaled PDF", format=".1f")]
+                    )
+                )
+                st.altair_chart(ch_hist + ch_curve, use_container_width=True)
+            else:
+                out_tbl = d_use["__days"].describe(percentiles=[0.5, 0.95]).to_frame(name="Days").reset_index()
+                st.dataframe(out_tbl, use_container_width=True)
+                st.download_button(
+                    "Download CSV — Velocity samples",
+                    d_use[["__days"]].rename(columns={"__days":"Days"}).to_csv(index=False).encode("utf-8"),
+                    "deal_stage_velocity_samples.csv","text/csv", key="stage_dl_vel"
+                )
+
+    # run tab
+    _deal_stage_tab()
