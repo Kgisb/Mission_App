@@ -5260,384 +5260,329 @@ elif view == "Deal Decay":
     # run the tab
     _deal_decay_tab()
 # =========================
-# Sales Tracker Tab (full)
+# Sales Tracker (with Day-wise view added)
 # =========================
 elif view == "Sales Tracker":
     def _sales_tracker_tab():
-        st.subheader("Sales Tracker — Counsellor-wise Performance (MTD / Cohort)")
+        st.subheader("Sales Tracker — Counsellor / Source / Country (MTD & Cohort) + Day-wise")
 
-        # ---------- Resolve core columns (defensive) ----------
+        # ---------- Resolve columns (defensive) ----------
         _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
         _pay    = pay_col    if (pay_col in df_f.columns)    else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
-        _src    = source_col    if (source_col in df_f.columns)    else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
-        _cty    = country_col   if (country_col in df_f.columns)   else find_col(df_f, ["Country","Student Country","Deal Country"])
         _cns    = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
+        _src    = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cty    = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
         _ris    = find_col(df_f, ["Referral Intent Source","Referral intent source"])
 
-        _first  = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
-        _resch  = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
-        _done   = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
+        _first_cal = first_cal_sched_col if (first_cal_sched_col in df_f.columns) else find_col(df_f, ["First Calibration Scheduled Date","First Calibration","First Cal Scheduled"])
+        _resched   = cal_resched_col     if (cal_resched_col     in df_f.columns) else find_col(df_f, ["Calibration Rescheduled Date","Cal Rescheduled","Rescheduled Date"])
+        _done      = cal_done_col        if (cal_done_col        in df_f.columns) else find_col(df_f, ["Calibration Done Date","Cal Done Date","Calibration Completed"])
 
         if not _create or _create not in df_f.columns or not _pay or _pay not in df_f.columns:
             st.warning("Create/Payment columns are missing. Please map 'Create Date' and 'Payment Received Date' in your sidebar.", icon="⚠️")
             st.stop()
+        if not _cns or _cns not in df_f.columns:
+            st.warning("Academic Counsellor column not found.", icon="⚠️")
+            st.stop()
 
-        # ---------- Date presets & Mode ----------
-        left, right = st.columns([1.2, 1.1])
-        with left:
-            preset = st.selectbox(
-                "Range",
-                ["Today", "Yesterday", "This month", "Last 7 days", "Custom"],
-                index=2,
-                help="Pick the window for KPIs and breakdowns.",
-                key="st_range"
-            )
-        with right:
+        # ---------- Controls ----------
+        c0, c1, c2, c3 = st.columns([1.1, 1.1, 1.2, 1])
+        with c0:
             mode = st.radio(
                 "Mode",
-                ["Cohort (Payment Month)", "MTD (Created Cohort)"],
-                horizontal=True,
-                index=0,
-                key="st_mode",
-                help=(
-                    "Cohort: Payments counted by payment date (create can be any time). "
-                    "MTD: Payments counted only if the deal was also created in the window."
-                )
+                ["Cohort", "MTD"],
+                index=0, horizontal=True, key="st_mode",
+                help=("Cohort: payments/events counted by their own date regardless of Create. "
+                      "MTD: payments/events counted only if also Created in window.")
             )
+        with c1:
+            scope = st.radio("Date scope", ["Today", "Yesterday", "This month", "Last month", "Custom"], index=2, horizontal=True, key="st_scope")
+        with c2:
+            gran = st.radio("Granularity", ["Summary", "Day-wise"], index=0, horizontal=True, key="st_gran")  # NEW
+        with c3:
+            chart_type = st.selectbox("Chart", ["Bar", "Line"], index=1, key="st_chart")
 
         today_d = date.today()
-        if preset == "Today":
-            start_d, end_d = today_d, today_d
-        elif preset == "Yesterday":
+        if scope == "Today":
+            range_start, range_end = today_d, today_d
+        elif scope == "Yesterday":
             yd = today_d - timedelta(days=1)
-            start_d, end_d = yd, yd
-        elif preset == "This month":
-            start_d, end_d = month_bounds(today_d)
-        elif preset == "Last 7 days":
-            start_d, end_d = today_d - timedelta(days=6), today_d
+            range_start, range_end = yd, yd
+        elif scope == "This month":
+            range_start, range_end = month_bounds(today_d)
+        elif scope == "Last month":
+            range_start, range_end = last_month_bounds(today_d)
         else:
-            d1, d2 = st.date_input("Custom range", value=(today_d.replace(day=1), today_d), key="st_custom")
-            if isinstance(d1, tuple) or isinstance(d2, tuple):
-                d1, d2 = d1[0], d2[0]
-            start_d, end_d = (min(d1, d2), max(d1, d2))
-        st.caption(f"Scope: **{start_d} → {end_d}** • Mode: **{mode}**")
+            d1, d2 = st.columns(2)
+            with d1: range_start = st.date_input("Start date", value=today_d.replace(day=1), key="st_start")
+            with d2: range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="st_end")
+            if range_end < range_start:
+                st.error("End date cannot be before start date.")
+                st.stop()
 
-        # ---------- Granularity ----------
-        gran = st.radio("Granularity", ["Daily", "Monthly"], index=0, horizontal=True, key="st_gran")
+        st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}** • Granularity: **{gran}**")
 
-        # ---------- Optional filters (with 'All') ----------
-        def norm_cat(s):
-            return s.fillna("Unknown").astype(str).str.strip()
+        # ---------- Normalize base series ----------
+        C   = coerce_datetime(df_f[_create]).dt.date
+        P   = coerce_datetime(df_f[_pay]).dt.date
+        CNS = df_f[_cns].fillna("Unknown").astype(str).str.strip()
+        SRC = df_f[_src].fillna("Unknown").astype(str).str.strip() if _src else pd.Series("Unknown", index=df_f.index)
+        CTY = df_f[_cty].fillna("Unknown").astype(str).str.strip() if _cty else pd.Series("Unknown", index=df_f.index)
+        F   = coerce_datetime(df_f[_first_cal]).dt.date if _first_cal and _first_cal in df_f.columns else None
+        R   = coerce_datetime(df_f[_resched]).dt.date   if _resched   and _resched   in df_f.columns else None
+        D   = coerce_datetime(df_f[_done]).dt.date      if _done      and _done      in df_f.columns else None
 
-        CTRY = norm_cat(df_f[_cty]) if _cty else pd.Series("Unknown", index=df_f.index)
-        SRC  = norm_cat(df_f[_src]) if _src else pd.Series("Unknown", index=df_f.index)
-        CNS  = norm_cat(df_f[_cns]) if _cns else pd.Series("Unknown", index=df_f.index)
-
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
-        with c1:
-            ctry_options = ["All"] + sorted(CTRY.unique().tolist()) if _cty else ["All"]
-            ctry_pick = st.multiselect("Filter Country", ctry_options, default=["All"], key="st_f_country")
-        with c2:
-            src_options = ["All"] + sorted(SRC.unique().tolist()) if _src else ["All"]
-            src_pick = st.multiselect("Filter JetLearn Deal Source", src_options, default=["All"], key="st_f_src")
-        with c3:
-            cns_options = ["All"] + sorted(CNS.unique().tolist()) if _cns else ["All"]
-            cns_pick = st.multiselect("Filter Academic Counsellor", cns_options, default=["All"], key="st_f_cns")
-
-        if "All" in ctry_pick: ctry_pick = sorted(CTRY.unique().tolist())
-        if "All" in src_pick:  src_pick  = sorted(SRC.unique().tolist())
-        if "All" in cns_pick:  cns_pick  = sorted(CNS.unique().tolist())
-
-        row_mask = CTRY.isin(ctry_pick) & SRC.isin(src_pick) & CNS.isin(cns_pick)
-
-        # ---------- Normalize timestamps ----------
-        C = coerce_datetime(df_f[_create]).dt.date
-        P = coerce_datetime(df_f[_pay]).dt.date
-
-        F = coerce_datetime(df_f[_first]).dt.date if _first and _first in df_f.columns else None
-        R = coerce_datetime(df_f[_resch]).dt.date if _resch and _resch in df_f.columns else None
-        D = coerce_datetime(df_f[_done]).dt.date  if _done  and _done  in df_f.columns else None
-
-        # Inclusive window mask helpers
-        def between_date(s, a, b):  # s is date series
-            return s.notna() & (s >= a) & (s <= b)
-
-        created_mask_in_win = between_date(C, start_d, end_d)
-        paid_mask_in_win    = between_date(P, start_d, end_d)
-
-        # Mode-aware enrolment mask
-        if mode.startswith("MTD"):
-            enrol_mask = paid_mask_in_win & created_mask_in_win
-        else:
-            enrol_mask = paid_mask_in_win
-
-        # Mode-aware calibration masks
-        def _mode_mask(ev_series):
-            if ev_series is None:
-                return None
-            ev_in = between_date(ev_series, start_d, end_d)
-            return (created_mask_in_win & ev_in) if mode.startswith("MTD") else ev_in
-
-        first_mask  = _mode_mask(F)
-        resch_mask  = _mode_mask(R)
-        done_mask   = _mode_mask(D)
-
-        # Sales Generated = payments with known RIS (non-empty, not 'Unknown'), respecting mode
         if _ris and _ris in df_f.columns:
-            RIS = norm_cat(df_f[_ris])
+            RIS = df_f[_ris].fillna("Unknown").astype(str).str.strip()
             has_sales_generated = RIS.str.len().gt(0) & (RIS.str.lower() != "unknown")
         else:
             RIS = pd.Series("Unknown", index=df_f.index)
             has_sales_generated = pd.Series(False, index=df_f.index)
 
-        sales_gen_mask = enrol_mask & has_sales_generated
+        # ---------- Window masks ----------
+        def between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
 
-        # Apply row filters (country/source/counsellor)
-        mask_created = created_mask_in_win & row_mask
-        mask_enrol   = enrol_mask & row_mask
-        mask_salesg  = sales_gen_mask & row_mask
-        mask_first   = (first_mask & row_mask) if first_mask is not None else None
-        mask_resch   = (resch_mask & row_mask) if resch_mask is not None else None
-        mask_done    = (done_mask & row_mask)  if done_mask  is not None else None
+        m_created = between_date(C, range_start, range_end)
+        m_paid    = between_date(P, range_start, range_end)
+        m_first   = between_date(F, range_start, range_end) if F is not None else None
+        m_resch   = between_date(R, range_start, range_end) if R is not None else None
+        m_done    = between_date(D, range_start, range_end) if D is not None else None
 
-        # ---------- Counsellor-level summary ----------
-        if not _cns or _cns not in df_f.columns:
-            st.info("Academic Counsellor column not found — cannot build counsellor-wise summary.")
-        else:
-            base = pd.DataFrame({
-                "Counsellor": CNS,
-                "_ones": 1,
-                "_created": mask_created.astype(int),
-                "_enrol":   mask_enrol.astype(int),
-                "_salesg":  mask_salesg.astype(int),
-            })
-            # Optional cals
-            if mask_first is not None:
-                base["_first"] = mask_first.astype(int)
-            else:
-                base["_first"] = 0
-            if mask_resch is not None:
-                base["_resch"] = mask_resch.astype(int)
-            else:
-                base["_resch"] = 0
-            if mask_done is not None:
-                base["_done"] = mask_done.astype(int)
-            else:
-                base["_done"] = 0
+        # Mode logic
+        m_enrol = (m_created & m_paid) if mode == "MTD" else m_paid
+        m_first_eff = (m_created & m_first) if (mode == "MTD" and m_first is not None) else m_first
+        m_resch_eff = (m_created & m_resch) if (mode == "MTD" and m_resch is not None) else m_resch
+        m_done_eff  = (m_created & m_done)  if (mode == "MTD" and m_done  is not None) else m_done
+        m_sales_gen = (m_enrol & has_sales_generated)  # Sales-generated enrolments
 
-            summ = base.groupby("Counsellor", dropna=False).agg(
-                DealsCreated=("_created","sum"),
-                Enrolments=("_enrol","sum"),
-                SalesGenerated=("_salesg","sum"),
-                FirstCal=("_first","sum"),
-                CalRescheduled=("_resch","sum"),
-                CalDone=("_done","sum"),
-            ).reset_index()
-            summ["Conversion%"] = np.where(summ["DealsCreated"]>0, summ["Enrolments"]/summ["DealsCreated"]*100.0, np.nan)
+        # ---------- Filters ----------
+        fc1, fc2, fc3 = st.columns([1.3, 1.3, 1.2])
+        with fc1:
+            cns_opts = ["All"] + sorted(CNS.unique().tolist())
+            pick_cns = st.multiselect("Academic Counsellor", options=cns_opts, default=["All"], key="st_cns")
+        with fc2:
+            src_opts = ["All"] + (sorted(SRC.unique().tolist()) if _src else [])
+            pick_src = st.multiselect("JetLearn Deal Source", options=src_opts, default=["All"], key="st_src")
+        with fc3:
+            cty_opts = ["All"] + (sorted(CTY.unique().tolist()) if _cty else [])
+            pick_cty = st.multiselect("Country", options=cty_opts, default=["All"], key="st_cty")
 
-            st.markdown("### Counsellor Summary")
-            st.dataframe(summ.sort_values(["Enrolments","DealsCreated"], ascending=[False, False]), use_container_width=True)
-            st.download_button(
-                "Download CSV — Sales Tracker (Counsellor Summary)",
-                summ.to_csv(index=False).encode("utf-8"),
-                "sales_tracker_counsellor_summary.csv",
-                "text/csv",
-                key="st_dl_summary"
-            )
+        # Resolve "All"
+        def _resolve(vals, all_vals):
+            return all_vals if ("All" in vals or not vals) else vals
 
-        st.markdown("---")
+        cns_sel = _resolve(pick_cns, sorted(CNS.unique().tolist()))
+        src_sel = _resolve(pick_src, sorted(SRC.unique().tolist())) if _src else ["Unknown"]
+        cty_sel = _resolve(pick_cty, sorted(CTY.unique().tolist())) if _cty else ["Unknown"]
 
-        # ---------- Time-series (Created / Enrolments / Conversion%) ----------
-        st.markdown("### Time Series")
-        ts_view = st.radio("Show as", ["Graph", "Table"], horizontal=True, key="st_ts_view")
+        base_mask = CNS.isin(cns_sel) & SRC.isin(src_sel) & CTY.isin(cty_sel)
 
-        if gran == "Daily":
-            # Daily series inside window and filters
-            days = pd.date_range(start_d, end_d, freq="D").date
-            ts_created = pd.Series(0, index=days)
-            ts_enrol   = pd.Series(0, index=days)
+        # ---------- Metrics builder helpers ----------
+        def _count(mask):
+            return int((base_mask & mask).sum()) if mask is not None else 0
 
-            if mask_created.any():
-                d_c = pd.Series(1, index=C[mask_created]).groupby(level=0).sum()
-                ts_created = ts_created.add(d_c, fill_value=0)
-            if mask_enrol.any():
-                d_p = pd.Series(1, index=P[mask_enrol]).groupby(level=0).sum()
-                ts_enrol = ts_enrol.add(d_p, fill_value=0)
-
-            ts = pd.DataFrame({"Date": ts_created.index, "Deals Created": ts_created.values.astype(int), "Enrolments": ts_enrol.values.astype(int)})
-            ts["Conversion%"] = np.where(ts["Deals Created"]>0, ts["Enrolments"]/ts["Deals Created"]*100.0, np.nan)
-        else:
-            # Monthly series based on Periods inside inclusive range
-            all_months = pd.period_range(start=start_d.replace(day=1), end=end_d.replace(day=1), freq="M")
-            C_M = coerce_datetime(df_f[_create]).dt.to_period("M")
-            P_M = coerce_datetime(df_f[_pay]).dt.to_period("M")
-
-            # Respect filters already in masks; now aggregate by month
-            created_m = (pd.Series(1, index=C_M[mask_created])
-                         .groupby(level=0).sum()
-                         .reindex(all_months, fill_value=0)
-                         .rename("Deals Created"))
-            enrol_m   = (pd.Series(1, index=P_M[mask_enrol])
-                         .groupby(level=0).sum()
-                         .reindex(all_months, fill_value=0)
-                         .rename("Enrolments"))
-            ts = pd.concat([created_m, enrol_m], axis=1).reset_index(names="Month")
-            ts["Month"] = ts["Month"].astype(str)
-            ts["Conversion%"] = np.where(ts["Deals Created"]>0, ts["Enrolments"]/ts["Deals Created"]*100.0, np.nan)
-
-        if ts_view == "Graph" and not ts.empty:
-            if gran == "Daily":
-                melt_ts = ts.melt(id_vars=["Date"], value_vars=["Deals Created","Enrolments"], var_name="Metric", value_name="Count")
-                ch_ts = (
-                    alt.Chart(melt_ts)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("Date:T", title="Date"),
-                        y=alt.Y("Count:Q", title="Count"),
-                        color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
-                        tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q")]
-                    )
-                    .properties(height=320, title=f"{gran} — Deals Created & Enrolments")
-                )
-                # Optional Conversion% line (secondary axis effect via tooltip)
-                st.altair_chart(ch_ts, use_container_width=True)
-            else:
-                melt_ts = ts.melt(id_vars=["Month"], value_vars=["Deals Created","Enrolments"], var_name="Metric", value_name="Count")
-                ch_ts = (
-                    alt.Chart(melt_ts)
-                    .mark_bar(opacity=0.9)
-                    .encode(
-                        x=alt.X("Month:N", title="Month"),
-                        y=alt.Y("Count:Q", title="Count"),
-                        color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
-                        tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q")]
-                    )
-                    .properties(height=320, title=f"{gran} — Deals Created & Enrolments")
-                )
-                st.altair_chart(ch_ts, use_container_width=True)
-        else:
-            st.dataframe(ts, use_container_width=True)
-            st.download_button(
-                "Download CSV — Time Series",
-                ts.to_csv(index=False).encode("utf-8"),
-                "sales_tracker_timeseries.csv",
-                "text/csv",
-                key="st_dl_ts"
-            )
-
-        st.markdown("---")
-
-        # ---------- Mix breakdowns (per Counsellor selection or All) ----------
-        st.markdown("### Mix — Deal Source & Country")
-        if not _cns or _cns not in df_f.columns:
-            st.info("Academic Counsellor column not found — cannot show per-counsellor mix.")
-        else:
-            cns_opts = ["All"] + sorted(CNS[row_mask].unique().tolist())
-            cns_pick_for_mix = st.selectbox("Pick Counsellor", options=cns_opts, index=0, key="st_mix_cns")
-
-            mix_mask_base = row_mask
-            if cns_pick_for_mix != "All":
-                mix_mask_base = mix_mask_base & (CNS == cns_pick_for_mix)
-
-            # For mix, we consider enrolments per mode (typical funnel outcome), but you can switch to created by changing mask below
-            mix_mask = mask_enrol & mix_mask_base
-
-            # Deal Source mix
-            if _src and _src in df_f.columns:
-                src_mix = (
-                    pd.DataFrame({"Source": SRC[mix_mask]})
-                    .assign(_one=1)
-                    .groupby("Source", dropna=False)["_one"].sum()
-                    .rename("Count")
-                    .reset_index()
-                    .sort_values("Count", ascending=False)
-                )
-                if not src_mix.empty:
-                    ch_src = (
-                        alt.Chart(src_mix)
-                        .mark_bar(opacity=0.9)
-                        .encode(
-                            x=alt.X("Source:N", sort=src_mix["Source"].tolist()),
-                            y=alt.Y("Count:Q"),
-                            tooltip=[alt.Tooltip("Source:N"), alt.Tooltip("Count:Q")]
-                        )
-                        .properties(height=320, title=f"Deal Source mix — {'All Counsellors' if cns_pick_for_mix=='All' else cns_pick_for_mix}")
-                    )
-                    st.altair_chart(ch_src, use_container_width=True)
-                else:
-                    st.info("No rows for chosen filters to show Deal Source mix.")
-            else:
-                st.info("Deal Source column not found.")
-
-            # Country mix
-            if _cty and _cty in df_f.columns:
-                cty_mix = (
-                    pd.DataFrame({"Country": CTRY[mix_mask]})
-                    .assign(_one=1)
-                    .groupby("Country", dropna=False)["_one"].sum()
-                    .rename("Count")
-                    .reset_index()
-                    .sort_values("Count", ascending=False)
-                )
-                if not cty_mix.empty:
-                    ch_cty = (
-                        alt.Chart(cty_mix)
-                        .mark_bar(opacity=0.9)
-                        .encode(
-                            x=alt.X("Country:N", sort=cty_mix["Country"].tolist()),
-                            y=alt.Y("Count:Q"),
-                            tooltip=[alt.Tooltip("Country:N"), alt.Tooltip("Count:Q")]
-                        )
-                        .properties(height=320, title=f"Country mix — {'All Counsellors' if cns_pick_for_mix=='All' else cns_pick_for_mix}")
-                    )
-                    st.altair_chart(ch_cty, use_container_width=True)
-                else:
-                    st.info("No rows for chosen filters to show Country mix.")
-            else:
-                st.info("Country column not found.")
-
-        st.markdown("---")
-
-        # ---------- KPI strip (overall, for current filters) ----------
-        st.markdown("### Overall KPIs (for current filters)")
-        k1, k2, k3, k4, k5, k6 = st.columns(6)
-        total_created = int(mask_created.sum())
-        total_enrol   = int(mask_enrol.sum())
-        total_first   = int(mask_first.sum()) if mask_first is not None else 0
-        total_resch   = int(mask_resch.sum()) if mask_resch is not None else 0
-        total_done    = int(mask_done.sum())  if mask_done  is not None else 0
-        total_salesg  = int(mask_salesg.sum())
-        conv_pct = (total_enrol / total_created * 100.0) if total_created > 0 else np.nan
-
-        # Simple CSS styling reused
+        # Summary KPIs (unchanged style)
         st.markdown(
             """
             <style>
-              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
-              .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
-              .kpi-value { font-size: 1.4rem; font-weight: 700; }
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 12px 14px; background: #ffffff; }
+              .kpi-title { font-size: 0.85rem; color: #6b7280; margin-bottom: 6px; }
+              .kpi-value { font-size: 1.6rem; font-weight: 700; }
               .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
             </style>
             """,
             unsafe_allow_html=True
         )
+        k1, k2, k3, k4 = st.columns(4)
         with k1:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Deals Created</div><div class='kpi-value'>{total_created:,}</div><div class='kpi-sub'>{start_d} → {end_d}</div></div>", unsafe_allow_html=True)
+            val = _count(m_created)
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Deals Created</div><div class='kpi-value'>{val:,}</div><div class='kpi-sub'>{range_start} → {range_end}</div></div>", unsafe_allow_html=True)
         with k2:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Enrolments</div><div class='kpi-value'>{total_enrol:,}</div><div class='kpi-sub'>Mode: {mode}</div></div>", unsafe_allow_html=True)
+            val = _count(m_enrol)
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Enrolments</div><div class='kpi-value'>{val:,}</div><div class='kpi-sub'>Mode: {mode}</div></div>", unsafe_allow_html=True)
         with k3:
-            ct = "–" if np.isnan(conv_pct) else f"{conv_pct:.1f}%"
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Conversion%</div><div class='kpi-value'>{ct}</div><div class='kpi-sub'>Enrolments / Created</div></div>", unsafe_allow_html=True)
+            val = _count(m_first_eff)
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>First Cal Scheduled</div><div class='kpi-value'>{val:,}</div><div class='kpi-sub'>Window</div></div>", unsafe_allow_html=True)
         with k4:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>First Cal Scheduled</div><div class='kpi-value'>{total_first:,}</div><div class='kpi-sub'>Within range</div></div>", unsafe_allow_html=True)
-        with k5:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Cal Rescheduled</div><div class='kpi-value'>{total_resch:,}</div><div class='kpi-sub'>Within range</div></div>", unsafe_allow_html=True)
-        with k6:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Cal Done</div><div class='kpi-value'>{total_done:,}</div><div class='kpi-sub'>Within range</div></div>", unsafe_allow_html=True)
+            val = _count(m_done_eff)
+            st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Calibration Done</div><div class='kpi-value'>{val:,}</div><div class='kpi-sub'>Window</div></div>", unsafe_allow_html=True)
 
-        # Sales Generated KPI separate (since it's a derived "known RIS on payments")
-        st.caption(f"**Sales Generated** (payments with known Referral Intent Source) in range: **{total_salesg:,}**")
+        st.markdown("---")
 
-    # run the tab
+        # ============
+        # Summary view
+        # ============
+        if gran == "Summary":
+            # Group by Counsellor with Source & Country breakdowns
+            metrics = []
+            gmask = base_mask
+            df_view = df_f.loc[gmask].copy()
+
+            # Build per-counsellor counts
+            def _series_count(by, mask, name):
+                if mask is None:
+                    return pd.DataFrame(columns=[by, name])
+                d = df_view.loc[mask.loc[gmask].values, [by]].copy()
+                if d.empty:
+                    return pd.DataFrame(columns=[by, name])
+                return d.assign(_one=1).groupby(by, dropna=False)["_one"].sum().rename(name).reset_index()
+
+            created_by = _series_count(_cns, m_created, "Deals Created")
+            enrol_by   = _series_count(_cns, m_enrol, "Enrolments")
+            first_by   = _series_count(_cns, m_first_eff, "First Cal Scheduled")
+            resch_by   = _series_count(_cns, m_resch_eff, "Cal Rescheduled")
+            done_by    = _series_count(_cns, m_done_eff, "Cal Done")
+            sales_by   = _series_count(_cns, m_sales_gen, "Sales Generated (RIS)")
+
+            out = created_by.merge(enrol_by, on=_cns, how="outer") \
+                            .merge(first_by, on=_cns, how="outer") \
+                            .merge(resch_by, on=_cns, how="outer") \
+                            .merge(done_by, on=_cns, how="outer") \
+                            .merge(sales_by, on=_cns, how="outer")
+            for c in ["Deals Created","Enrolments","First Cal Scheduled","Cal Rescheduled","Cal Done","Sales Generated (RIS)"]:
+                if c not in out.columns: out[c] = 0
+            out = out.fillna(0).sort_values("Enrolments", ascending=False)
+
+            st.markdown("### Counsellor Summary")
+            st.dataframe(out, use_container_width=True)
+            st.download_button(
+                "Download CSV — Counsellor Summary",
+                out.to_csv(index=False).encode("utf-8"),
+                "sales_tracker_counsellor_summary.csv",
+                "text/csv",
+                key="st_dl_summary"
+            )
+
+        # ==========
+        # Day-wise
+        # ==========
+        else:
+            st.markdown("### Day-wise — by Academic Counsellor")
+
+            # Build a day-wise frame for each metric with the correct date basis
+            def _daily(by_cns=True):
+                frames = []
+
+                # Deals Created by Create Date
+                d1 = pd.DataFrame({
+                    "Date": C[base_mask & m_created],
+                    "Counsellor": CNS[base_mask & m_created],
+                    "Metric": "Deals Created",
+                })
+                frames.append(d1)
+
+                # Enrolments by Payment Date (per mode already handled in m_enrol)
+                d2 = pd.DataFrame({
+                    "Date": P[base_mask & m_enrol],
+                    "Counsellor": CNS[base_mask & m_enrol],
+                    "Metric": "Enrolments",
+                })
+                frames.append(d2)
+
+                # First Cal
+                if m_first_eff is not None:
+                    d3 = pd.DataFrame({
+                        "Date": F[base_mask & m_first_eff],
+                        "Counsellor": CNS[base_mask & m_first_eff],
+                        "Metric": "First Cal Scheduled",
+                    })
+                    frames.append(d3)
+
+                # Rescheduled
+                if m_resch_eff is not None:
+                    d4 = pd.DataFrame({
+                        "Date": R[base_mask & m_resch_eff],
+                        "Counsellor": CNS[base_mask & m_resch_eff],
+                        "Metric": "Cal Rescheduled",
+                    })
+                    frames.append(d4)
+
+                # Done
+                if m_done_eff is not None:
+                    d5 = pd.DataFrame({
+                        "Date": D[base_mask & m_done_eff],
+                        "Counsellor": CNS[base_mask & m_done_eff],
+                        "Metric": "Cal Done",
+                    })
+                    frames.append(d5)
+
+                # Sales Generated (RIS) — counted off payment date where RIS is present
+                d6 = pd.DataFrame({
+                    "Date": P[base_mask & m_sales_gen],
+                    "Counsellor": CNS[base_mask & m_sales_gen],
+                    "Metric": "Sales Generated (RIS)",
+                })
+                frames.append(d6)
+
+                df_all = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else pd.DataFrame(columns=["Date","Counsellor","Metric"])
+                if df_all.empty:
+                    return df_all
+
+                df_all["Date"] = pd.to_datetime(df_all["Date"])
+                g = df_all.groupby(["Counsellor","Date","Metric"], observed=True).size().rename("Count").reset_index()
+                return g
+
+            day = _daily()
+            if day.empty:
+                st.info("No day-wise data for the selected filters/date range.")
+                st.stop()
+
+            # Pick metric(s) to plot
+            all_metrics = day["Metric"].unique().tolist()
+            msel = st.multiselect("Metrics", options=all_metrics, default=all_metrics[:2], key="st_day_metrics")
+
+            day_show = day[day["Metric"].isin(msel)].copy()
+            day_show["Date"] = pd.to_datetime(day_show["Date"])
+
+            # Chart
+            if chart_type == "Bar":
+                ch = (
+                    alt.Chart(day_show)
+                    .mark_bar(opacity=0.9)
+                    .encode(
+                        x=alt.X("yearmonthdate(Date):T", title="Date"),
+                        y=alt.Y("Count:Q", title="Count"),
+                        color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
+                        column=alt.Column("Counsellor:N", title="Academic Counsellor"),
+                        tooltip=[alt.Tooltip("yearmonthdate(Date):T", title="Date"),
+                                 alt.Tooltip("Counsellor:N"),
+                                 alt.Tooltip("Metric:N"),
+                                 alt.Tooltip("Count:Q")]
+                    )
+                    .properties(height=220)
+                )
+            else:
+                ch = (
+                    alt.Chart(day_show)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("yearmonthdate(Date):T", title="Date"),
+                        y=alt.Y("Count:Q", title="Count"),
+                        color=alt.Color("Metric:N", legend=alt.Legend(orient="bottom")),
+                        facet=alt.Facet("Counsellor:N", title="Academic Counsellor", columns=2),
+                        tooltip=[alt.Tooltip("yearmonthdate(Date):T", title="Date"),
+                                 alt.Tooltip("Counsellor:N"),
+                                 alt.Tooltip("Metric:N"),
+                                 alt.Tooltip("Count:Q")]
+                    )
+                    .properties(height=220)
+                )
+
+            st.altair_chart(ch, use_container_width=True)
+
+            # Table + Download
+            st.dataframe(
+                day_show.sort_values(["Counsellor","Date","Metric"]),
+                use_container_width=True
+            )
+            st.download_button(
+                "Download CSV — Day-wise Counsellor Metrics",
+                day_show.sort_values(["Counsellor","Date","Metric"]).to_csv(index=False).encode("utf-8"),
+                "sales_tracker_daywise_counsellor.csv",
+                "text/csv",
+                key="st_dl_daywise"
+            )
+
+    # run it
     _sales_tracker_tab()
-
