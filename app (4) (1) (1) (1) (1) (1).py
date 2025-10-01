@@ -3859,6 +3859,121 @@ elif view == "Predictibility":
                 "lookback": lookback, "weighted": weighted,
             })
 
+        # =========================================================
+        # ADD-ON: Accuracy % — Prediction vs Actual (MTD, created-to-date population)
+        # =========================================================
+        st.markdown("### Accuracy % — Prediction vs Actual (Current Month-to-Date)")
+
+        # Helper masks
+        def _between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
+
+        # Population: deals created THIS MONTH up to today
+        pop_mask = _between_date(dfp["_C"].dt.date, mstart, today_d)
+        # Actual positive: those in population that PAID in MTD
+        actual_pos = pop_mask & _between_date(dfp["_P"].dt.date, mstart, today_d)
+
+        if pop_mask.sum() == 0:
+            st.info("No deals created in the current month-to-date — cannot compute Accuracy%.")
+        else:
+            cols = dfp.columns.tolist()
+
+            # Try to auto-detect probability-like columns (0..1)
+            prob_candidates = []
+            for c in cols:
+                s = pd.to_numeric(dfp[c], errors="coerce")
+                if s.notna().sum() >= 10 and (s.between(0, 1).mean() > 0.8):
+                    prob_candidates.append(c)
+
+            # Try to auto-detect label-like columns
+            def _is_binary_label(series: pd.Series) -> bool:
+                v = series.dropna().astype(str).str.strip().str.lower().unique().tolist()
+                v = [x for x in v if x != ""]
+                ok = {"yes","no","true","false","1","0","paid","not paid","enrolled","not enrolled","positive","negative"}
+                return len(v) <= 6 and any(x in ok for x in v)
+
+            label_candidates = [c for c in cols if _is_binary_label(dfp[c])]
+
+            with st.expander("Prediction input (choose column & threshold)"):
+                pred_type = st.radio("Prediction type", ["Probability (0–1)", "Label (Yes/No)"],
+                                     index=0 if prob_candidates else 1, horizontal=True, key="pred_mtd_type")
+
+                if pred_type.startswith("Probability"):
+                    prob_col = st.selectbox("Probability column", options=(prob_candidates or cols),
+                                            index=0 if prob_candidates else 0,
+                                            help="Numeric 0..1 scores; values coerced to [0,1].")
+                    thresh = st.slider("Decision threshold (≥)", 0.0, 1.0, 0.5, 0.01)
+                    prob = pd.to_numeric(dfp[prob_col], errors="coerce").fillna(0.0).clip(0.0, 1.0)
+                    pred_pos = prob >= thresh
+                else:
+                    lbl_col = st.selectbox("Label column (Yes/No)",
+                                           options=(label_candidates or cols),
+                                           index=0 if label_candidates else 0)
+                    s = dfp[lbl_col].astype(str).str.strip().str.lower()
+                    pred_pos = s.isin(["yes","true","1","paid","enrolled","positive"])
+
+            # Restrict to population rows
+            y_true = actual_pos[pop_mask]
+            y_pred = pred_pos[pop_mask]
+
+            TP = int((y_true & y_pred).sum())
+            TN = int((~y_true & ~y_pred).sum())
+            FP = int((~y_true & y_pred).sum())
+            FN = int((y_true & ~y_pred).sum())
+            N  = TP + TN + FP + FN
+
+            if N == 0:
+                st.info("No evaluable rows in current MTD population for accuracy.")
+            else:
+                acc = (TP + TN) / N * 100.0
+
+                # KPI + Confusion matrix
+                st.markdown(
+                    """
+                    <style>
+                      .kpi-card { border:1px solid #e5e7eb; border-radius:14px; padding:12px 14px; background:#ffffff; }
+                      .kpi-title { font-size:0.85rem; color:#6b7280; margin-bottom:6px; }
+                      .kpi-value { font-size:1.6rem; font-weight:700; }
+                      .kpi-sub { font-size:0.8rem; color:#6b7280; margin-top:4px; }
+                    </style>
+                    """,
+                    unsafe_allow_html=True
+                )
+                cA, cB = st.columns([1, 1.2])
+                with cA:
+                    st.markdown(
+                        f"<div class='kpi-card'><div class='kpi-title'>Accuracy%</div>"
+                        f"<div class='kpi-value'>{acc:.1f}%</div>"
+                        f"<div class='kpi-sub'>Population: Created {mstart} → {today_d} • Actuals: Paid in MTD</div></div>",
+                        unsafe_allow_html=True
+                    )
+                with cB:
+                    cm = pd.DataFrame(
+                        {
+                            "Predicted Positive": [TP, FP],
+                            "Predicted Negative": [FN, TN],
+                        },
+                        index=["Actual Positive", "Actual Negative"],
+                    )
+                    st.markdown("Confusion matrix")
+                    st.dataframe(cm, use_container_width=True)
+
+                # If probability mode, show quick thresholds helper
+                if 'prob' in locals():
+                    with st.expander("Threshold helper (sample points)"):
+                        cuts = [0.3, 0.4, 0.5, 0.6, 0.7]
+                        rows = []
+                        for t in cuts:
+                            yp = (prob >= t)
+                            tp = int((actual_pos & yp & pop_mask).sum())
+                            tn = int((~actual_pos & ~yp & pop_mask).sum())
+                            fp = int((~actual_pos & yp & pop_mask).sum())
+                            fn = int((actual_pos & ~yp & pop_mask).sum())
+                            n  = tp + tn + fp + fn
+                            acc_t = (tp + tn) / n * 100.0 if n else np.nan
+                            rows.append({"Thresh": t, "Accuracy%": acc_t, "TP": tp, "TN": tn, "FP": fp, "FN": fn, "N": n})
+                        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
 # =========================
 # Referrals Tab (full)
 # =========================
