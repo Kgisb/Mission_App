@@ -6230,7 +6230,7 @@ elif view == "Carry Forward":
     # run the tab
     _carry_forward_tab()
 # =========================
-# Buying Propensity Tab (with Sales Subscription derived metric)
+# Buying Propensity Tab (with Sales Subscription fallback logic)
 # =========================
 elif view == "Buying Propensity":
     def _buying_propensity_tab():
@@ -6240,11 +6240,11 @@ elif view == "Buying Propensity":
         _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
         _pay    = pay_col    if (pay_col    in df_f.columns) else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
 
-        # Core variables for this tab
+        # Core variables
         _term  = find_col(df_f, ["Payment Term","PaymentTerm","Term","Installments","Tenure"])
         _ptype = find_col(df_f, ["Payment Type","PaymentType","Payment Mode","PaymentMode","Mode of Payment","Mode"])
 
-        # NEW: Installment Terms for derived metric (Sales Subscription)
+        # For derived metric (Sales Subscription)
         _inst  = find_col(df_f, ["Installment Terms","Installments Terms","Installment Count","No. of Installments","EMI Count","Installments"])
 
         # Optional filters
@@ -6255,7 +6255,6 @@ elif view == "Buying Propensity":
         if not _create or not _pay or _create not in df_f.columns or _pay not in df_f.columns:
             st.warning("Create/Payment columns are required for Buying Propensity. Please map them in the sidebar.", icon="⚠️")
             st.stop()
-
         if not _term or _term not in df_f.columns:
             st.warning("‘Payment Term’ column not found. Please ensure a column like ‘Payment Term’/‘PaymentTerm’ exists.", icon="⚠️")
             st.stop()
@@ -6278,7 +6277,6 @@ elif view == "Buying Propensity":
         with col_top2:
             scope = st.radio("Date scope (window KPIs)", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="bp_dscope")
         with col_top3:
-            # MoM horizon for trends
             mom_trailing = st.selectbox("MoM trailing (months)", [3, 6, 9, 12, 18, 24], index=3, key="bp_momh")
 
         today_d = date.today()
@@ -6297,7 +6295,7 @@ elif view == "Buying Propensity":
                 st.stop()
         st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
 
-        # MoM anchor month (controls trend charts)
+        # MoM anchor month
         end_m_default = today_d.replace(day=1)
         end_month = st.date_input("Trend anchor month (use 1st of month for MoM)", value=end_m_default, key="bp_end_month")
         if isinstance(end_month, tuple):
@@ -6306,7 +6304,7 @@ elif view == "Buying Propensity":
         months = pd.period_range(end=end_period, periods=int(mom_trailing), freq="M")
         months_list = months.astype(str).tolist()
 
-        # ---------- Filters (with “All” default for JLS/Counsellor) ----------
+        # ---------- Filters (All defaults) ----------
         def norm_cat(s):
             return s.fillna("Unknown").astype(str).str.strip()
 
@@ -6347,7 +6345,7 @@ elif view == "Buying Propensity":
         P = coerce_datetime(df_f[_pay]).dt.date
         PT = norm_cat(df_f[_ptype])
         TERM = pd.to_numeric(df_f[_term], errors="coerce")  # numeric
-        INST = pd.to_numeric(df_f[_inst], errors="coerce") if _inst and _inst in df_f.columns else pd.Series(np.nan, index=df_f.index)
+        INST_raw = pd.to_numeric(df_f[_inst], errors="coerce") if _inst and _inst in df_f.columns else pd.Series(np.nan, index=df_f.index)
 
         def between_date(s, a, b):
             return s.notna() & (s >= a) & (s <= b)
@@ -6361,24 +6359,29 @@ elif view == "Buying Propensity":
         else:
             win_mask = filt_mask & mask_paid
 
-        # Window DF (keep existing output intact + add derived)
+        # ---------- Window DF + Sales Subscription with fallback ----------
+        # Fallback rule: if Installment Terms is blank/NaN or 0, use Payment Term as the denominator.
+        # So inst_eff = INST_raw if > 0 else TERM; SS = TERM / inst_eff (only if both > 0)
         df_win = pd.DataFrame({
             "_create": C, "_pay": P,
             "Payment Type": PT,
             "Payment Term": TERM,
-            "Installment Terms": INST
+            "Installment Terms": INST_raw
         }).loc[win_mask].copy()
 
-        # NEW: Derived metric — Sales Subscription = Payment Term / Installment Terms
-        # (Only when both > 0)
+        inst_eff = np.where(
+            (df_win["Installment Terms"].notna()) & (df_win["Installment Terms"] > 0),
+            df_win["Installment Terms"],
+            df_win["Payment Term"]
+        )
         df_win["Sales Subscription"] = np.where(
             (df_win["Payment Term"].notna()) & (df_win["Payment Term"] > 0) &
-            (df_win["Installment Terms"].notna()) & (df_win["Installment Terms"] > 0),
-            df_win["Payment Term"] / df_win["Installment Terms"],
+            (~pd.isna(inst_eff)) & (inst_eff > 0),
+            df_win["Payment Term"] / inst_eff,
             np.nan
         )
 
-        # ---------- KPI strip for window (unchanged) ----------
+        # ---------- KPI strip ----------
         avg_term = float(df_win["Payment Term"].mean()) if df_win["Payment Term"].notna().any() else np.nan
         med_term = float(df_win["Payment Term"].median()) if df_win["Payment Term"].notna().any() else np.nan
         n_payments = int(len(df_win))
@@ -6435,11 +6438,11 @@ elif view == "Buying Propensity":
                 return (P_m == period_m) & filt_mask
 
         # =============================
-        # Tabs: Term Dynamics / Type Dynamics / Correlation
+        # Tabs
         # =============================
         tabs = st.tabs(["Payment Term Dynamics", "Payment Type Dynamics", "Term × Type (Correlation)"])
 
-        # ---- 1) Payment Term Dynamics (unchanged + NEW Sales Subscription block) ----
+        # ---- 1) Payment Term Dynamics (includes Sales Subscription) ----
         with tabs[0]:
             sub_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_term_view")
 
@@ -6487,18 +6490,21 @@ elif view == "Buying Propensity":
                 else:
                     st.info("No Payment Term values in the current window to plot a distribution.")
 
-                # ===== NEW: Sales Subscription dynamics (MoM + histogram) =====
+                # ===== Sales Subscription dynamics (MoM + histogram) with fallback =====
                 st.markdown("#### Sales Subscription (Payment Term ÷ Installment Terms)")
-                # Build MoM for Sales Subscription when columns are available
-                sales_rows = []
                 has_inst_col = _inst and _inst in df_f.columns
                 if has_inst_col:
+                    sales_rows = []
+                    term_series_all = pd.to_numeric(df_f[_term], errors="coerce")
+                    inst_series_all = pd.to_numeric(df_f[_inst], errors="coerce")
                     for pm in months:
                         msk = month_mask(pm)
-                        term_m = pd.to_numeric(df_f.loc[msk, _term], errors="coerce")
-                        inst_m = pd.to_numeric(df_f.loc[msk, _inst], errors="coerce")
-                        valid = (term_m > 0) & (inst_m > 0)
-                        ss = (term_m[valid] / inst_m[valid]).mean() if valid.any() else np.nan
+                        term_m = term_series_all[msk]
+                        inst_m = inst_series_all[msk]
+                        # fallback: if inst <= 0 or NaN, use term
+                        inst_eff_m = np.where((~inst_m.isna()) & (inst_m > 0), inst_m, term_m)
+                        valid = (~term_m.isna()) & (term_m > 0) & (~pd.isna(inst_eff_m)) & (inst_eff_m > 0)
+                        ss = (term_m[valid] / inst_eff_m[valid]).mean() if valid.any() else np.nan
                         sales_rows.append({"Month": str(pm), "AvgSalesSubscription": float(ss) if not np.isnan(ss) else np.nan,
                                            "Count": int(valid.sum())})
                     ss_mom = pd.DataFrame(sales_rows)
@@ -6511,10 +6517,10 @@ elif view == "Buying Propensity":
                                 y=alt.Y("AvgSalesSubscription:Q", title="Avg Sales Subscription"),
                                 tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("AvgSalesSubscription:Q", format=".2f"), alt.Tooltip("Count:Q")]
                             )
-                            .properties(height=300, title="MoM — Average Sales Subscription (Term ÷ Installments)")
+                            .properties(height=300, title="MoM — Average Sales Subscription (with fallback)")
                         )
                         st.altair_chart(ch_ss, use_container_width=True)
-                    # Window histogram for Sales Subscription
+                    # Window histogram
                     win_ss = df_win["Sales Subscription"].dropna()
                     if not win_ss.empty:
                         ch_ss_hist = (
@@ -6542,16 +6548,19 @@ elif view == "Buying Propensity":
                 if not dist.empty:
                     st.dataframe(dist.rename(columns={"Payment Term":"Payment Term (window)"}).head(1000), use_container_width=True)
 
-                # ===== NEW: Sales Subscription table (MoM) =====
+                # Sales Subscription table (MoM) with fallback
                 has_inst_col = _inst and _inst in df_f.columns
                 if has_inst_col:
                     sales_rows = []
+                    term_series_all = pd.to_numeric(df_f[_term], errors="coerce")
+                    inst_series_all = pd.to_numeric(df_f[_inst], errors="coerce")
                     for pm in months:
                         msk = month_mask(pm)
-                        term_m = pd.to_numeric(df_f.loc[msk, _term], errors="coerce")
-                        inst_m = pd.to_numeric(df_f.loc[msk, _inst], errors="coerce")
-                        valid = (term_m > 0) & (inst_m > 0)
-                        ss = (term_m[valid] / inst_m[valid]).mean() if valid.any() else np.nan
+                        term_m = term_series_all[msk]
+                        inst_m = inst_series_all[msk]
+                        inst_eff_m = np.where((~inst_m.isna()) & (inst_m > 0), inst_m, term_m)
+                        valid = (~term_m.isna()) & (term_m > 0) & (~pd.isna(inst_eff_m)) & (inst_eff_m > 0)
+                        ss = (term_m[valid] / inst_eff_m[valid]).mean() if valid.any() else np.nan
                         sales_rows.append({"Month": str(pm), "AvgSalesSubscription": float(ss) if not np.isnan(ss) else np.nan,
                                            "ValidRows": int(valid.sum())})
                     ss_mom = pd.DataFrame(sales_rows)
@@ -6563,7 +6572,7 @@ elif view == "Buying Propensity":
                         key="bp_dl_ss_mom"
                     )
 
-        # ---- 2) Payment Type Dynamics (unchanged) ----
+        # ---- 2) Payment Type Dynamics ----
         with tabs[1]:
             type_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_type_view")
             pct_mode  = st.checkbox("Show % share per month", value=False, key="bp_type_pct")
@@ -6635,11 +6644,10 @@ elif view == "Buying Propensity":
                 "Metric",
                 ["Payment Term (mean ± std)", "Sales Subscription (mean ± std)"],
                 index=0, horizontal=True, key="bp_corr_metric",
-                help="Switch to ‘Sales Subscription’ to analyze Payment Term ÷ Installment Terms by Payment Type."
+                help="Switch to ‘Sales Subscription’ (with fallback) to analyze Term ÷ Installment Terms by Payment Type."
             )
             corr_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_corr_view")
 
-            # Base window rows with both columns present
             corr_df = df_win[["Payment Type","Payment Term","Sales Subscription"]].copy()
             if metric_pick.startswith("Payment Term"):
                 corr_df = corr_df.dropna(subset=["Payment Type","Payment Term"])
@@ -6709,3 +6717,4 @@ elif view == "Buying Propensity":
 
     # run the tab
     _buying_propensity_tab()
+
