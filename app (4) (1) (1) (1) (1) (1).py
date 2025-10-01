@@ -6230,7 +6230,7 @@ elif view == "Carry Forward":
     # run the tab
     _carry_forward_tab()
 # =========================
-# Buying Propensity Tab
+# Buying Propensity Tab (with Sales Subscription derived metric)
 # =========================
 elif view == "Buying Propensity":
     def _buying_propensity_tab():
@@ -6241,8 +6241,11 @@ elif view == "Buying Propensity":
         _pay    = pay_col    if (pay_col    in df_f.columns) else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
 
         # Core variables for this tab
-        _term = find_col(df_f, ["Payment Term","PaymentTerm","Term","Installments","Tenure"])
+        _term  = find_col(df_f, ["Payment Term","PaymentTerm","Term","Installments","Tenure"])
         _ptype = find_col(df_f, ["Payment Type","PaymentType","Payment Mode","PaymentMode","Mode of Payment","Mode"])
+
+        # NEW: Installment Terms for derived metric (Sales Subscription)
+        _inst  = find_col(df_f, ["Installment Terms","Installments Terms","Installment Count","No. of Installments","EMI Count","Installments"])
 
         # Optional filters
         _cty = country_col     if (country_col     in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
@@ -6343,7 +6346,8 @@ elif view == "Buying Propensity":
         C = coerce_datetime(df_f[_create]).dt.date
         P = coerce_datetime(df_f[_pay]).dt.date
         PT = norm_cat(df_f[_ptype])
-        TERM = pd.to_numeric(df_f[_term], errors="coerce")  # numeric, NaN if not parseable
+        TERM = pd.to_numeric(df_f[_term], errors="coerce")  # numeric
+        INST = pd.to_numeric(df_f[_inst], errors="coerce") if _inst and _inst in df_f.columns else pd.Series(np.nan, index=df_f.index)
 
         def between_date(s, a, b):
             return s.notna() & (s >= a) & (s <= b)
@@ -6357,12 +6361,24 @@ elif view == "Buying Propensity":
         else:
             win_mask = filt_mask & mask_paid
 
+        # Window DF (keep existing output intact + add derived)
         df_win = pd.DataFrame({
             "_create": C, "_pay": P,
-            "Payment Type": PT, "Payment Term": TERM
+            "Payment Type": PT,
+            "Payment Term": TERM,
+            "Installment Terms": INST
         }).loc[win_mask].copy()
 
-        # ---------- KPI strip for window ----------
+        # NEW: Derived metric — Sales Subscription = Payment Term / Installment Terms
+        # (Only when both > 0)
+        df_win["Sales Subscription"] = np.where(
+            (df_win["Payment Term"].notna()) & (df_win["Payment Term"] > 0) &
+            (df_win["Installment Terms"].notna()) & (df_win["Installment Terms"] > 0),
+            df_win["Payment Term"] / df_win["Installment Terms"],
+            np.nan
+        )
+
+        # ---------- KPI strip for window (unchanged) ----------
         avg_term = float(df_win["Payment Term"].mean()) if df_win["Payment Term"].notna().any() else np.nan
         med_term = float(df_win["Payment Term"].median()) if df_win["Payment Term"].notna().any() else np.nan
         n_payments = int(len(df_win))
@@ -6410,7 +6426,6 @@ elif view == "Buying Propensity":
         C_m = coerce_datetime(df_f[_create]).dt.to_period("M")
         P_m = coerce_datetime(df_f[_pay]).dt.to_period("M")
 
-        # For each month in the trailing window, build a mask honoring MTD/Cohort
         def month_mask(period_m):
             if period_m is pd.NaT:
                 return pd.Series(False, index=df_f.index)
@@ -6424,7 +6439,7 @@ elif view == "Buying Propensity":
         # =============================
         tabs = st.tabs(["Payment Term Dynamics", "Payment Type Dynamics", "Term × Type (Correlation)"])
 
-        # ---- 1) Payment Term Dynamics ----
+        # ---- 1) Payment Term Dynamics (unchanged + NEW Sales Subscription block) ----
         with tabs[0]:
             sub_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_term_view")
 
@@ -6437,7 +6452,7 @@ elif view == "Buying Propensity":
                              "Count": int(msk.sum())})
             term_mom = pd.DataFrame(rows)
 
-            # In-range distribution (window)
+            # Window distributions
             dist = df_win[["Payment Term"]].copy()
             dist = dist[dist["Payment Term"].notna()]
 
@@ -6457,7 +6472,6 @@ elif view == "Buying Propensity":
                 else:
                     st.info("No data for MoM Average Payment Term in the selected horizon.")
 
-                # Histogram for window
                 if not dist.empty:
                     ch_hist = (
                         alt.Chart(dist)
@@ -6467,11 +6481,56 @@ elif view == "Buying Propensity":
                             y=alt.Y("count():Q", title="Count"),
                             tooltip=[alt.Tooltip("count():Q", title="Count")]
                         )
-                        .properties(height=280, title="Window Distribution — Payment Term")
+                        .properties(height=260, title="Window Distribution — Payment Term")
                     )
                     st.altair_chart(ch_hist, use_container_width=True)
                 else:
                     st.info("No Payment Term values in the current window to plot a distribution.")
+
+                # ===== NEW: Sales Subscription dynamics (MoM + histogram) =====
+                st.markdown("#### Sales Subscription (Payment Term ÷ Installment Terms)")
+                # Build MoM for Sales Subscription when columns are available
+                sales_rows = []
+                has_inst_col = _inst and _inst in df_f.columns
+                if has_inst_col:
+                    for pm in months:
+                        msk = month_mask(pm)
+                        term_m = pd.to_numeric(df_f.loc[msk, _term], errors="coerce")
+                        inst_m = pd.to_numeric(df_f.loc[msk, _inst], errors="coerce")
+                        valid = (term_m > 0) & (inst_m > 0)
+                        ss = (term_m[valid] / inst_m[valid]).mean() if valid.any() else np.nan
+                        sales_rows.append({"Month": str(pm), "AvgSalesSubscription": float(ss) if not np.isnan(ss) else np.nan,
+                                           "Count": int(valid.sum())})
+                    ss_mom = pd.DataFrame(sales_rows)
+                    if not ss_mom.empty:
+                        ch_ss = (
+                            alt.Chart(ss_mom)
+                            .mark_line(point=True)
+                            .encode(
+                                x=alt.X("Month:N", sort=months_list, title="Month"),
+                                y=alt.Y("AvgSalesSubscription:Q", title="Avg Sales Subscription"),
+                                tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("AvgSalesSubscription:Q", format=".2f"), alt.Tooltip("Count:Q")]
+                            )
+                            .properties(height=300, title="MoM — Average Sales Subscription (Term ÷ Installments)")
+                        )
+                        st.altair_chart(ch_ss, use_container_width=True)
+                    # Window histogram for Sales Subscription
+                    win_ss = df_win["Sales Subscription"].dropna()
+                    if not win_ss.empty:
+                        ch_ss_hist = (
+                            alt.Chart(pd.DataFrame({"Sales Subscription": win_ss}))
+                            .mark_bar(opacity=0.9)
+                            .encode(
+                                x=alt.X("Sales Subscription:Q", bin=alt.Bin(maxbins=30)),
+                                y=alt.Y("count():Q"),
+                                tooltip=[alt.Tooltip("count():Q", title="Count")]
+                            )
+                            .properties(height=260, title="Window Distribution — Sales Subscription")
+                        )
+                        st.altair_chart(ch_ss_hist, use_container_width=True)
+                else:
+                    st.info("‘Installment Terms’ column not found — Sales Subscription is unavailable for dynamics.", icon="ℹ️")
+
             else:
                 st.dataframe(term_mom, use_container_width=True)
                 st.download_button(
@@ -6483,12 +6542,32 @@ elif view == "Buying Propensity":
                 if not dist.empty:
                     st.dataframe(dist.rename(columns={"Payment Term":"Payment Term (window)"}).head(1000), use_container_width=True)
 
-        # ---- 2) Payment Type Dynamics ----
+                # ===== NEW: Sales Subscription table (MoM) =====
+                has_inst_col = _inst and _inst in df_f.columns
+                if has_inst_col:
+                    sales_rows = []
+                    for pm in months:
+                        msk = month_mask(pm)
+                        term_m = pd.to_numeric(df_f.loc[msk, _term], errors="coerce")
+                        inst_m = pd.to_numeric(df_f.loc[msk, _inst], errors="coerce")
+                        valid = (term_m > 0) & (inst_m > 0)
+                        ss = (term_m[valid] / inst_m[valid]).mean() if valid.any() else np.nan
+                        sales_rows.append({"Month": str(pm), "AvgSalesSubscription": float(ss) if not np.isnan(ss) else np.nan,
+                                           "ValidRows": int(valid.sum())})
+                    ss_mom = pd.DataFrame(sales_rows)
+                    st.dataframe(ss_mom, use_container_width=True)
+                    st.download_button(
+                        "Download CSV — MoM Sales Subscription",
+                        ss_mom.to_csv(index=False).encode("utf-8"),
+                        "buying_propensity_sales_subscription_mom.csv", "text/csv",
+                        key="bp_dl_ss_mom"
+                    )
+
+        # ---- 2) Payment Type Dynamics (unchanged) ----
         with tabs[1]:
             type_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_type_view")
             pct_mode  = st.checkbox("Show % share per month", value=False, key="bp_type_pct")
 
-            # MoM counts by type
             type_rows = []
             for pm in months:
                 msk = month_mask(pm)
@@ -6552,61 +6631,79 @@ elif view == "Buying Propensity":
 
         # ---- 3) Term × Type (Correlation-ish view) ----
         with tabs[2]:
-            corr_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_corr_view",
-                                 help="Shows how Payment Term varies by Payment Type for the selected window.")
-            corr_df = df_win[["Payment Type","Payment Term"]].dropna()
-            if corr_df.empty:
-                st.info("No rows in the current window with both Payment Term and Payment Type.")
+            metric_pick = st.radio(
+                "Metric",
+                ["Payment Term (mean ± std)", "Sales Subscription (mean ± std)"],
+                index=0, horizontal=True, key="bp_corr_metric",
+                help="Switch to ‘Sales Subscription’ to analyze Payment Term ÷ Installment Terms by Payment Type."
+            )
+            corr_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_corr_view")
+
+            # Base window rows with both columns present
+            corr_df = df_win[["Payment Type","Payment Term","Sales Subscription"]].copy()
+            if metric_pick.startswith("Payment Term"):
+                corr_df = corr_df.dropna(subset=["Payment Type","Payment Term"])
+                value_col = "Payment Term"
+                ttl = "Window — Payment Term by Payment Type (mean ± std)"
             else:
-                # Summary by type
+                corr_df = corr_df.dropna(subset=["Payment Type","Sales Subscription"])
+                value_col = "Sales Subscription"
+                ttl = "Window — Sales Subscription by Payment Type (mean ± std)"
+
+            if corr_df.empty:
+                st.info("No rows in the current window for the selected metric.")
+            else:
                 summary = (
                     corr_df.groupby("Payment Type", as_index=False)
-                           .agg(Count=("Payment Term","size"),
-                                MeanTerm=("Payment Term","mean"),
-                                MedianTerm=("Payment Term","median"),
-                                StdTerm=("Payment Term","std"))
+                           .agg(Count=(value_col,"size"),
+                                Mean=(value_col,"mean"),
+                                Median=(value_col,"median"),
+                                Std=(value_col,"std"))
                 )
-                summary["MeanTerm"]   = summary["MeanTerm"].round(2)
-                summary["MedianTerm"] = summary["MedianTerm"].round(2)
-                summary["StdTerm"]    = summary["StdTerm"].fillna(0.0).round(2)
+                summary["Mean"]   = summary["Mean"].round(2)
+                summary["Median"] = summary["Median"].round(2)
+                summary["Std"]    = summary["Std"].fillna(0.0).round(2)
 
                 if corr_view == "Graph":
-                    # Boxplot-like (using rule and ticks) for Payment Term by Payment Type
-                    # Simpler: bar of mean + error band = std (robust across Altair versions)
                     mean_err = summary.copy()
-                    mean_err["Low"]  = (mean_err["MeanTerm"] - mean_err["StdTerm"]).clip(lower=0)
-                    mean_err["High"] = mean_err["MeanTerm"] + mean_err["StdTerm"]
+                    mean_err["Low"]  = (mean_err["Mean"] - mean_err["Std"]).clip(lower=0)
+                    mean_err["High"] =  mean_err["Mean"] + mean_err["Std"]
 
-                    base = alt.Chart(mean_err).encode(x=alt.X("Payment Type:N", sort=summary.sort_values("MeanTerm")["Payment Type"].tolist()))
-                    error = base.mark_errorbar().encode(y=alt.Y("Low:Q", title="Payment Term"), y2="High:Q")
-                    bars  = base.mark_bar().encode(y="MeanTerm:Q", tooltip=[
-                        alt.Tooltip("Payment Type:N"), alt.Tooltip("Count:Q"),
-                        alt.Tooltip("MeanTerm:Q", format=".2f"), alt.Tooltip("MedianTerm:Q", format=".2f"),
-                        alt.Tooltip("StdTerm:Q", format=".2f")
-                    ]).properties(height=360, title="Window — Payment Term by Payment Type (mean ± std)")
+                    base = alt.Chart(mean_err).encode(
+                        x=alt.X("Payment Type:N", sort=summary.sort_values("Mean")["Payment Type"].tolist())
+                    )
+                    error = base.mark_errorbar().encode(y=alt.Y("Low:Q", title=value_col), y2="High:Q")
+                    bars  = base.mark_bar().encode(
+                        y="Mean:Q",
+                        tooltip=[
+                            alt.Tooltip("Payment Type:N"),
+                            alt.Tooltip("Count:Q"),
+                            alt.Tooltip("Mean:Q", format=".2f"),
+                            alt.Tooltip("Median:Q", format=".2f"),
+                            alt.Tooltip("Std:Q", format=".2f"),
+                        ],
+                    ).properties(height=360, title=ttl)
                     st.altair_chart(error + bars, use_container_width=True)
 
-                    # Scatter (each row) optionally
                     show_scatter = st.checkbox("Show raw points (jitter)", value=False, key="bp_corr_scatter")
                     if show_scatter:
-                        # simple jitter via xOffset-like effect: use column as x and random y? Better: add jitter to x using transform_calculate isn't supported easily; plot strip by overlaying points
                         pts = (
                             alt.Chart(corr_df)
                             .mark_circle(opacity=0.35, size=40)
                             .encode(
                                 x=alt.X("Payment Type:N"),
-                                y=alt.Y("Payment Term:Q"),
-                                tooltip=[alt.Tooltip("Payment Type:N"), alt.Tooltip("Payment Term:Q")]
+                                y=alt.Y(f"{value_col}:Q"),
+                                tooltip=[alt.Tooltip("Payment Type:N"), alt.Tooltip(f"{value_col}:Q")]
                             )
-                            .properties(height=320, title="Points — Payment Term by Payment Type")
+                            .properties(height=320, title=f"Points — {value_col} by Payment Type")
                         )
                         st.altair_chart(pts, use_container_width=True)
                 else:
-                    st.dataframe(summary.sort_values(["MeanTerm","Count"], ascending=[False, False]), use_container_width=True)
+                    st.dataframe(summary.sort_values(["Mean","Count"], ascending=[False, False]), use_container_width=True)
                     st.download_button(
-                        "Download CSV — Term × Type Summary",
+                        "Download CSV — Term/Subscription × Type Summary",
                         summary.to_csv(index=False).encode("utf-8"),
-                        "buying_propensity_term_by_type.csv", "text/csv",
+                        "buying_propensity_term_or_subscription_by_type.csv", "text/csv",
                         key="bp_dl_corr_summary"
                     )
 
