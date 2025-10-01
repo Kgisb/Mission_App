@@ -167,7 +167,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Velocity", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
+        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Velocity", "Carry Forward", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -5953,3 +5953,290 @@ elif view == "Deal Velocity":
 
     # run tab
     _deal_velocity_tab()
+# =========================
+# Carry Forward Tab (Cohort Contributions)
+# =========================
+elif view == "Carry Forward":
+    def _carry_forward_tab():
+        st.subheader("Carry Forward — Cohort Contribution of Created → Enrolment/Revenue")
+
+        # ---------- Resolve core columns ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, [
+            "Create Date","Created Date","Deal Create Date","CreateDate"
+        ])
+        _pay    = pay_col if (pay_col in df_f.columns) else find_col(df_f, [
+            "Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"
+        ])
+        # Try to find revenue/amount; if missing, we’ll fall back to counts
+        _amt    = find_col(df_f, ["Revenue","Amount","Payment Amount","Paid Amount","Fee","Net Amount"])
+
+        # Optional filters
+        _cty = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+        _src = source_col if (source_col in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cns = counsellor_col if (counsellor_col in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
+
+        if not _create or not _pay or _create not in df_f.columns or _pay not in df_f.columns:
+            st.warning("Create/Payment columns are required. Please map them in the sidebar.", icon="⚠️")
+            st.stop()
+
+        # ---------- Controls ----------
+        col_top1, col_top2, col_top3 = st.columns([1.2, 1.2, 1.2])
+        with col_top1:
+            metric_mode = st.radio(
+                "Metric",
+                ["Enrolments", "Revenue"],
+                index=0 if _amt is None or _amt not in df_f.columns else 1,
+                horizontal=True,
+                key="cf_metric",
+                help="If 'Revenue' selected but no amount column is detected, counts will be used."
+            )
+        with col_top2:
+            # Cohort analysis is inherently by payment month (when conversion/revenue is realized)
+            trailing = st.selectbox("Payment MoM horizon", [3, 6, 9, 12, 18, 24], index=2, key="cf_trailing")
+        with col_top3:
+            show_mode = st.radio("View", ["Graph", "Table"], index=0, horizontal=True, key="cf_view")
+
+        # Date scope (payment-month range end)
+        today_d = date.today()
+        end_m_default = today_d.replace(day=1)
+        end_month = st.date_input("End month (use 1st of month)", value=end_m_default, key="cf_end_month")
+        if isinstance(end_month, tuple):
+            end_month = end_month[0]
+        end_period = pd.Period(end_month.replace(day=1), freq="M")
+        months = pd.period_range(end=end_period, periods=int(trailing), freq="M")
+        months_list = months.astype(str).tolist()
+
+        # Filters with “All”
+        def norm_cat(s):
+            return s.fillna("Unknown").astype(str).str.strip()
+
+        fcol1, fcol2, fcol3 = st.columns([1.2, 1.2, 1.2])
+        if _cty:
+            all_cty = sorted(norm_cat(df_f[_cty]).unique().tolist())
+            opt_cty = ["All"] + all_cty
+            sel_cty = fcol1.multiselect("Filter Country", options=opt_cty, default=["All"], key="cf_cty")
+        else:
+            all_cty, sel_cty = [], ["All"]
+
+        if _src:
+            all_src = sorted(norm_cat(df_f[_src]).unique().tolist())
+            opt_src = ["All"] + all_src
+            sel_src = fcol2.multiselect("Filter JetLearn Deal Source", options=opt_src, default=["All"], key="cf_src")
+        else:
+            all_src, sel_src = [], ["All"]
+
+        if _cns:
+            all_cns = sorted(norm_cat(df_f[_cns]).unique().tolist())
+            opt_cns = ["All"] + all_cns
+            sel_cns = fcol3.multiselect("Filter Academic Counsellor", options=opt_cns, default=["All"], key="cf_cns")
+        else:
+            all_cns, sel_cns = [], ["All"]
+
+        def _apply_multi_all(series, selected):
+            if series is None or "All" in selected:
+                return pd.Series(True, index=df_f.index)
+            return norm_cat(series).isin(selected)
+
+        mask_cty = _apply_multi_all(df_f[_cty] if _cty else None, sel_cty)
+        mask_src = _apply_multi_all(df_f[_src] if _src else None, sel_src)
+        mask_cns = _apply_multi_all(df_f[_cns] if _cns else None, sel_cns)
+        filt_mask = mask_cty & mask_src & mask_cns
+
+        # ---------- Build cohort frame ----------
+        C = coerce_datetime(df_f[_create]).dt.to_period("M")
+        P = coerce_datetime(df_f[_pay]).dt.to_period("M")
+
+        # Only keep rows where payment month is inside the horizon window
+        in_pay_window = P.isin(months)
+        base_mask = in_pay_window & filt_mask
+
+        if metric_mode == "Revenue" and _amt and _amt in df_f.columns:
+            metric_series = pd.to_numeric(df_f[_amt], errors="coerce").fillna(0.0)
+            agg_func = "sum"
+            val_name = "Revenue"
+        else:
+            metric_series = pd.Series(1, index=df_f.index, dtype=float)
+            agg_func = "sum"
+            val_name = "Enrolments"
+
+        # Cohort matrix: Payment Month × Create Month
+        cohort_df = pd.DataFrame({
+            "PayMonth": P[base_mask].astype(str),
+            "CreateMonth": C[base_mask].astype(str),
+            val_name: metric_series[base_mask]
+        })
+
+        if cohort_df.empty:
+            st.info("No rows in selected horizon/filters.")
+            st.stop()
+
+        # Pivot: matrix with rows=PayMonth, cols=CreateMonth
+        matrix = (cohort_df
+                  .groupby(["PayMonth","CreateMonth"], as_index=False)[val_name]
+                  .sum())
+        pivot = (matrix.pivot(index="PayMonth", columns="CreateMonth", values=val_name)
+                        .reindex(index=months_list, columns=sorted(matrix["CreateMonth"].unique()))
+                        .fillna(0.0))
+
+        # ---------- Same-month vs carry-forward (lag buckets) ----------
+        # lag = months between PayMonth and CreateMonth (>=0 only; if negative treat as 0 contribution here)
+        m_long = pivot.stack().rename(val_name).reset_index()
+        m_long["Lag"] = (pd.PeriodIndex(m_long["PayMonth"], freq="M") -
+                         pd.PeriodIndex(m_long["CreateMonth"], freq="M")).astype(int)
+        m_long.loc[m_long["Lag"] < 0, "Lag"] = np.nan  # ignore future-created in the matrix
+
+        # Build lag buckets: 0 (same), 1, 2, 3, 4, 5, 6+
+        def lag_bucket(n):
+            if pd.isna(n): return np.nan
+            n = int(n)
+            if n <= 0: return "Lag 0 (Same Month)"
+            if n == 1: return "Lag 1"
+            if n == 2: return "Lag 2"
+            if n == 3: return "Lag 3"
+            if n == 4: return "Lag 4"
+            if n == 5: return "Lag 5"
+            return "Lag 6+"
+
+        m_long["LagBucket"] = m_long["Lag"].map(lag_bucket)
+
+        lag_tbl = (m_long.dropna(subset=["LagBucket"])
+                          .groupby(["PayMonth","LagBucket"], as_index=False)[val_name]
+                          .sum())
+        # Ensure all months exist
+        lag_tbl = lag_tbl[lag_tbl["PayMonth"].isin(months_list)]
+        # Reorder buckets
+        bucket_order = ["Lag 0 (Same Month)","Lag 1","Lag 2","Lag 3","Lag 4","Lag 5","Lag 6+"]
+        lag_tbl["LagBucket"] = pd.Categorical(lag_tbl["LagBucket"], categories=bucket_order, ordered=True)
+
+        # Totals & same-month contribution KPI (latest month)
+        latest = months_list[-1]
+        latest_tot = lag_tbl.loc[lag_tbl["PayMonth"] == latest, val_name].sum()
+        latest_same = lag_tbl.loc[(lag_tbl["PayMonth"] == latest) & (lag_tbl["LagBucket"]=="Lag 0 (Same Month)") , val_name].sum()
+        latest_pct_same = (latest_same / latest_tot * 100.0) if latest_tot > 0 else np.nan
+
+        st.markdown(
+            """
+            <style>
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
+              .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
+              .kpi-value { font-size: 1.4rem; font-weight: 700; }
+              .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Latest Month Total ({val_name})</div>"
+                f"<div class='kpi-value'>{(latest_tot if val_name=='Revenue' else int(latest_tot)):,}</div>"
+                f"<div class='kpi-sub'>{latest}</div></div>", unsafe_allow_html=True)
+        with k2:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Same-Month ({val_name})</div>"
+                f"<div class='kpi-value'>{(latest_same if val_name=='Revenue' else int(latest_same)):,}</div>"
+                f"<div class='kpi-sub'>{latest}</div></div>", unsafe_allow_html=True)
+        with k3:
+            pct_txt = "–" if np.isnan(latest_pct_same) else f"{latest_pct_same:.1f}%"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Same-Month % of Total</div>"
+                f"<div class='kpi-value'>{pct_txt}</div>"
+                f"<div class='kpi-sub'>Share of {val_name} from Lag 0</div></div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ---------- Graphs / Tables ----------
+        tabs = st.tabs(["Cohort Heatmap", "Lag Breakdown (stacked)", "Downloads"])
+        with tabs[0]:
+            view_heat = st.radio("View as", ["Graph", "Table"], index=0, horizontal=True, key="cf_heat_view")
+            if view_heat == "Graph":
+                # Heatmap of payment month × create month
+                heat_df = matrix.copy()
+                heat_df["PayMonthCat"] = pd.Categorical(heat_df["PayMonth"], categories=months_list, ordered=True)
+                ch = (
+                    alt.Chart(heat_df)
+                    .mark_rect()
+                    .encode(
+                        x=alt.X("CreateMonth:N", title="Create Month", sort=sorted(heat_df["CreateMonth"].unique())),
+                        y=alt.Y("PayMonthCat:N", title="Payment Month", sort=months_list),
+                        color=alt.Color(f"{val_name}:Q", title=val_name, scale=alt.Scale(scheme="greens")),
+                        tooltip=[
+                            alt.Tooltip("PayMonth:N", title="Payment Month"),
+                            alt.Tooltip("CreateMonth:N", title="Create Month"),
+                            alt.Tooltip(f"{val_name}:Q", title=val_name, format=".2f" if val_name=="Revenue" else "d"),
+                        ],
+                    )
+                    .properties(height=420, title=f"Cohort Heatmap — {val_name}")
+                )
+                st.altair_chart(ch, use_container_width=True)
+            else:
+                st.dataframe(pivot.reset_index().rename(columns={"index":"PayMonth"}), use_container_width=True)
+
+        with tabs[1]:
+            view_lag = st.radio("Lag view as", ["Graph", "Table"], index=0, horizontal=True, key="cf_lag_view")
+            if view_lag == "Graph":
+                # Stacked bar by lag buckets per pay month
+                ch2 = (
+                    alt.Chart(lag_tbl)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("PayMonth:N", sort=months_list, title="Payment Month"),
+                        y=alt.Y(f"{val_name}:Q", title=val_name),
+                        color=alt.Color("LagBucket:N", legend=alt.Legend(orient="bottom")),
+                        tooltip=[alt.Tooltip("PayMonth:N"),
+                                 alt.Tooltip("LagBucket:N"),
+                                 alt.Tooltip(f"{val_name}:Q", format=".2f" if val_name=="Revenue" else "d")]
+                    )
+                    .properties(height=360, title=f"Lag Breakdown — {val_name}")
+                )
+                st.altair_chart(ch2, use_container_width=True)
+
+                # Optional percentage stack
+                pct_toggle = st.checkbox("Show % share per month", value=False, key="cf_pct_stack")
+                if pct_toggle:
+                    pct_tbl = lag_tbl.copy()
+                    month_tot = pct_tbl.groupby("PayMonth")[val_name].transform("sum")
+                    pct_tbl["Pct"] = np.where(month_tot>0, pct_tbl[val_name]/month_tot*100.0, 0.0)
+                    ch3 = (
+                        alt.Chart(pct_tbl)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("PayMonth:N", sort=months_list, title="Payment Month"),
+                            y=alt.Y("Pct:Q", title="% of month", scale=alt.Scale(domain=[0,100])),
+                            color=alt.Color("LagBucket:N", legend=alt.Legend(orient="bottom")),
+                            tooltip=[alt.Tooltip("PayMonth:N"),
+                                     alt.Tooltip("LagBucket:N"),
+                                     alt.Tooltip("Pct:Q", format=".1f")]
+                        )
+                        .properties(height=320, title="Lag Breakdown — % Share")
+                    )
+                    st.altair_chart(ch3, use_container_width=True)
+            else:
+                # Wide table: one row per PayMonth, columns = lag buckets
+                wide = (lag_tbl
+                        .pivot(index="PayMonth", columns="LagBucket", values=val_name)
+                        .reindex(index=months_list, columns=bucket_order)
+                        .fillna(0.0))
+                st.dataframe(wide.reset_index(), use_container_width=True)
+
+        with tabs[2]:
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.download_button(
+                    "Download CSV — Cohort Heatmap Data",
+                    pivot.reset_index().to_csv(index=False).encode("utf-8"),
+                    "carry_forward_cohort_matrix.csv", "text/csv", key="cf_dl_matrix"
+                )
+            with col_d2:
+                wide = (lag_tbl
+                        .pivot(index="PayMonth", columns="LagBucket", values=val_name)
+                        .reindex(index=months_list, columns=bucket_order)
+                        .fillna(0.0))
+                st.download_button(
+                    "Download CSV — Lag Breakdown",
+                    wide.reset_index().to_csv(index=False).encode("utf-8"),
+                    "carry_forward_lag_breakdown.csv", "text/csv", key="cf_dl_lag"
+                )
+
+    # run the tab
+    _carry_forward_tab()
