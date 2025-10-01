@@ -167,7 +167,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Stage", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
+        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Velocity", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -5587,11 +5587,11 @@ elif view == "Sales Tracker":
     # run it
     _sales_tracker_tab()
 # =========================
-# Deal Stage Tab (full)
+# Deal Velocity Tab (full)
 # =========================
-elif view == "Deal Stage":
-    def _deal_stage_tab():
-        st.subheader("Deal Stage — Volume & Velocity (MTD / Cohort)")
+elif view == "Deal Velocity":
+    def _deal_velocity_tab():
+        st.subheader("Deal Velocity — Volume & Velocity (MTD / Cohort)")
 
         # ---------- Resolve key columns (defensive) ----------
         _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
@@ -5795,7 +5795,7 @@ elif view == "Deal Stage":
                     st.download_button(
                         "Download CSV — MoM Stage Volumes",
                         pivot.to_csv(index=False).encode("utf-8"),
-                        "deal_stage_mom.csv", "text/csv", key="stage_dl_mom"
+                        "deal_velocity_mom.csv", "text/csv", key="stage_dl_mom"
                     )
             else:
                 # Day-wise
@@ -5822,7 +5822,7 @@ elif view == "Deal Stage":
                     st.download_button(
                         "Download CSV — Day-wise Stage Volumes",
                         pivot.to_csv(index=False).encode("utf-8"),
-                        "deal_stage_daywise.csv", "text/csv", key="stage_dl_day"
+                        "deal_velocity_daywise.csv", "text/csv", key="stage_dl_day"
                     )
 
         st.markdown("---")
@@ -5834,6 +5834,7 @@ elif view == "Deal Stage":
             ("First Calibration Scheduled", "Calibration Done", _first, _done),
             ("Deal Created", "Enrolment", _create, _pay),
             ("First Calibration Scheduled", "Calibration Rescheduled", _first, _resch),
+            ("Calibration Done", "Enrolment", _done, _pay),  # added
         ]
         # Allow user to pick a pair
         valid_pairs = [(a,b) for (a,b,fc,tc) in trans_pairs if fc and tc and fc in df_f.columns and tc in df_f.columns]
@@ -5862,6 +5863,7 @@ elif view == "Deal Stage":
 
         # Mode window for "to" event
         to_in = between_date(to_dt.dt.date, range_start, range_end)
+        mask_created_in = between_date(C, range_start, range_end)  # reuse created window
         window_mask = (to_in & mask_created_in) if (mode == "MTD") else to_in
 
         # Apply global filters too
@@ -5887,6 +5889,17 @@ elif view == "Deal Stage":
             med = float(np.median(d_use["__days"]))
             p95 = float(np.percentile(d_use["__days"], 95))
 
+            st.markdown(
+                """
+                <style>
+                  .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
+                  .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
+                  .kpi-value { font-size: 1.4rem; font-weight: 700; }
+                  .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
             kpa, kpb, kpc, kpd = st.columns(4)
             with kpa:
                 st.markdown(f"<div class='kpi-card'><div class='kpi-title'>μ (Average days)</div><div class='kpi-value'>{mu:.1f}</div><div class='kpi-sub'>{from_label} → {to_label}</div></div>", unsafe_allow_html=True)
@@ -5900,16 +5913,12 @@ elif view == "Deal Stage":
             # Bell curve toggle
             vmode = st.radio("Velocity view", ["Histogram + Bell curve", "Table"], index=0, horizontal=True, key="stage_vel_view")
             if vmode == "Histogram + Bell curve":
-                # Histogram data
                 hist_df = d_use[["__days"]].rename(columns={"__days":"Days"}).copy()
-
-                # Build normal curve points (x from 0 to max(p95*1.2, max))
                 x_max = max(hist_df["Days"].max(), p95) * 1.2
                 x_vals = np.linspace(0, max(1, x_max), 200)
-                # Normal PDF scaled to counts (area under histogram approx)
-                # Get approximate scale: total count * bin width ~ area
-                binw = max(1, round(hist_df["Days"].max() / 20))  # coarse
-                pdf = (1.0/(sigma if sigma>0 else 1.0)/np.sqrt(2*np.pi)) * np.exp(-(x_vals - mu)**2/(2*(sigma if sigma>0 else 1.0)**2))
+                binw = max(1, round(hist_df["Days"].max() / 20))
+                sigma_safe = (sigma if sigma > 0 else 1.0)
+                pdf = (1.0/sigma_safe/np.sqrt(2*np.pi)) * np.exp(-(x_vals - mu)**2/(2*sigma_safe**2))
                 scale = len(hist_df) * binw
                 curve_df = pd.DataFrame({"Days": x_vals, "ScaledPDF": pdf * scale})
 
@@ -5939,8 +5948,8 @@ elif view == "Deal Stage":
                 st.download_button(
                     "Download CSV — Velocity samples",
                     d_use[["__days"]].rename(columns={"__days":"Days"}).to_csv(index=False).encode("utf-8"),
-                    "deal_stage_velocity_samples.csv","text/csv", key="stage_dl_vel"
+                    "deal_velocity_samples.csv","text/csv", key="stage_dl_vel"
                 )
 
     # run tab
-    _deal_stage_tab()
+    _deal_velocity_tab()
