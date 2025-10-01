@@ -6833,164 +6833,137 @@ elif view == "Buying Propensity":
 # =========================
 # Cash-in Tab (live Google Sheet range A2:D13, fixed header & footer)
 # =========================
+# =========================
+# Cash-in Tab (Google Sheet A2:D13, header from first row in range, last 'Team' row fixed)
+# =========================
 elif view == "Cash-in":
-    import io
     import pandas as pd
     import numpy as np
-    from datetime import datetime
+    import altair as alt
+    from io import StringIO
 
-    st.subheader("Cash-in — Live Sheet Snapshot (A2:D13)")
+    st.subheader("Cash-in — Live Pull from Google Sheet (A2:D13)")
 
-    # --- Config (from your link)
+    # ---- Your Google Sheet (same sheet, just export as CSV)
+    # Original: https://docs.google.com/spreadsheets/d/1tw6gTaUEycAD5DJjw5ASSdF-WwYEt2TqcMb2lTKtKps/edit?gid=0#gid=0
     SHEET_ID = "1tw6gTaUEycAD5DJjw5ASSdF-WwYEt2TqcMb2lTKtKps"
     GID = "0"
-    RANGE_A1 = "A2:D13"  # includes header row (first) + data + final total (last)
+    CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
-    # Optional: auto-refresh every N seconds
-    c1, c2 = st.columns([1.2, 1])
-    with c1:
-        auto = st.checkbox("Auto-refresh", value=False, help="When ON, the sheet data will refresh automatically.")
-    with c2:
-        interval_sec = st.number_input("Refresh interval (sec)", min_value=10, max_value=600, value=60, step=5, disabled=not auto)
-
-    if auto:
+    # ---- Fetch CSV
+    @st.cache_data(ttl=60)
+    def _load_sheet_csv(url: str) -> pd.DataFrame:
         try:
-            from streamlit_autorefresh import st_autorefresh
-            st_autorefresh(interval=interval_sec * 1000, key="cashin_refresh")
-        except Exception:
-            st.caption("Tip: Install streamlit-autorefresh for auto-refresh, or click Rerun.")
-
-    @st.cache_data(ttl=60, show_spinner=True)
-    def _fetch_gsheet_csv(sheet_id: str, gid: str, a1: str) -> pd.DataFrame:
-        """Fetch via public CSV export (no auth)."""
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}&range={a1}"
-        df = pd.read_csv(url, header=None, dtype=str)  # keep raw strings; we’ll coerce later
-        return df
-
-    @st.cache_data(ttl=60, show_spinner=True)
-    def _fetch_gsheet_service_account(sheet_id: str, gid: str, a1: str) -> pd.DataFrame:
-        """Fallback using a Google service account in st.secrets['gcp_service_account']."""
-        import gspread
-        from google.oauth2.service_account import Credentials
-
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets.readonly",
-            "https://www.googleapis.com/auth/drive.readonly",
-        ]
-        info = st.secrets.get("gcp_service_account", None)
-        if not info:
-            raise RuntimeError("No service account found in st.secrets['gcp_service_account'].")
-
-        creds = Credentials.from_service_account_info(info, scopes=scopes)
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(sheet_id)
-        ws = sh.get_worksheet_by_id(int(gid))
-        values = ws.get(a1)  # list of lists
-
-        # convert to dataframe (strings), no header yet
-        if not values:
+            df = pd.read_csv(url, dtype=str, keep_default_na=False, na_values=[""])
+        except Exception as e:
+            st.error(f"Unable to load Google Sheet: {e}")
             return pd.DataFrame()
-        width = max(len(r) for r in values)
-        padded = [r + [""] * (width - len(r)) for r in values]
-        df = pd.DataFrame(padded, dtype=str)
         return df
 
-    def fetch_live_raw() -> pd.DataFrame:
-        """Try CSV export; on failure, fall back to service account if available."""
-        try:
-            df = _fetch_gsheet_csv(SHEET_ID, GID, RANGE_A1)
-            method = "CSV export"
-        except Exception as e_csv:
-            try:
-                df = _fetch_gsheet_service_account(SHEET_ID, GID, RANGE_A1)
-                method = "Service account"
-            except Exception as e_sa:
-                st.error(
-                    "Unable to load Google Sheet.\n\n"
-                    "• Ensure the sheet is shared publicly (Viewer) **or**\n"
-                    "• Add a Google service account JSON to `st.secrets['gcp_service_account']` with read access.\n\n"
-                    f"CSV error: {e_csv}\nService Account error: {e_sa}"
-                )
-                return pd.DataFrame()
-        st.caption(f"Fetched via **{method}** at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        return df
+    df_raw = _load_sheet_csv(CSV_URL)
 
-    def prepare_df(df_in: pd.DataFrame) -> pd.DataFrame:
-        """
-        Interpret first row as header, last row as fixed footer.
-        Return a dataframe with the same rows as the sheet subset but with proper headers.
-        """
-        if df_in.empty:
-            return df_in
-
-        # First row -> header
-        header = df_in.iloc[0].tolist()
-        data = df_in.iloc[1:].copy()
-
-        # Apply headers; pad or truncate to match width
-        ncols = data.shape[1]
-        if len(header) < ncols:
-            header = header + [f"Col {i}" for i in range(len(header)+1, ncols+1)]
-        elif len(header) > ncols:
-            header = header[:ncols]
-        data.columns = header
-
-        return data.reset_index(drop=True)
-
-    # Fetch & prepare
-    df_raw = fetch_live_raw()
     if df_raw.empty:
-        st.info("No data returned from the sheet range (A2:D13).")
-        st.stop()
-
-    df = prepare_df(df_raw)
-    if df.empty:
-        st.info("The selected range has no rows beyond the header.")
-        st.stop()
-
-    # Split into: middle body (sortable) + fixed last row (footer)
-    if len(df) >= 2:
-        body = df.iloc[:-1].copy()
-        footer = df.iloc[-1:].copy()
+        st.info("No data loaded from the Google Sheet yet.")
     else:
-        body = df.copy()
-        footer = df.iloc[0:0].copy()
+        # ---- Slice A2:D13 -> rows: index 1..12 (inclusive), cols 0..3 (inclusive)
+        # Notes:
+        # - A2 is the first cell of the range (so row index 1 in pandas).
+        # - The FIRST row *inside this range* is treated as HEADER for the table.
+        # - The LAST row (typically containing 'Team' total) must remain as a static footer.
+        try:
+            # Safe slice (guard for sheets shorter than expected)
+            max_row = min(len(df_raw.index), 13)   # up to row 13
+            df_rng = df_raw.iloc[1:max_row, 0:4].copy()  # rows A2..A13, cols A..D
+            # Drop fully empty rows/cols
+            df_rng.replace(r"^\s*$", np.nan, regex=True, inplace=True)
+            df_rng.dropna(how="all", inplace=True)
+            df_rng.dropna(axis=1, how="all", inplace=True)
+            df_rng = df_rng.reset_index(drop=True)
 
-    # Sorting UI (applies to body only; header & footer remain fixed)
-    sort_cols = list(body.columns)
-    col_sort, col_dir = st.columns([1.4, 1])
-    with col_sort:
-        sort_by = st.selectbox("Sort by (body only)", options=sort_cols, index=0, key="cashin_sort_col")
-    with col_dir:
-        descending = st.toggle("Descending", value=False, key="cashin_sort_desc")
+            if df_rng.empty:
+                st.info("Selected range A2:D13 is empty.")
+            else:
+                # First row in range is header
+                new_cols = df_rng.iloc[0].astype(str).tolist()
+                df_body = df_rng.iloc[1:].copy()
+                df_body.columns = new_cols
 
-    # Try numeric sort when possible (but leave original strings if not numeric)
-    def _coerce_series(s: pd.Series):
-        s_num = pd.to_numeric(s.str.replace(",", "", regex=False), errors="coerce")
-        if s_num.notna().any():
-            # If at least some numeric, sort by numeric; but keep display as original
-            return s_num, True
-        return s, False
+                # If the last row is the total (e.g., column 0 contains 'Team'), keep it fixed at bottom.
+                # We'll not expose any sort controls, so it visually remains last.
+                # Still, we bold-style it so users can spot it.
+                # Identify last row as footer (assume last row is total)
+                if len(df_body) >= 1:
+                    footer_row = df_body.tail(1)
+                    body_wo_footer = df_body.iloc[:-1].copy()
+                else:
+                    footer_row = pd.DataFrame(columns=df_body.columns)
+                    body_wo_footer = df_body.copy()
 
-    if sort_by in body.columns:
-        sort_key, is_numeric = _coerce_series(body[sort_by].astype(str))
-        body = body.assign(__sortkey=sort_key.values).sort_values(
-            "__sortkey" if is_numeric else sort_by,
-            ascending=not descending,
-            kind="mergesort"  # stable sort
-        ).drop(columns="__sortkey", errors="ignore")
+                # Display: single table (header row already set), with last row visually emphasized via Styler
+                def _style_footer(sdf: pd.DataFrame) -> "pd.io.formats.style.Styler":
+                    if sdf.empty:
+                        return sdf.style
+                    # Build mask for last row
+                    last_idx = sdf.index[-1]
+                    def highlight_last_row(row):
+                        if row.name == last_idx:
+                            return ["font-weight: 700; background-color: #f3f4f6;"] * len(row)
+                        return [""] * len(row)
+                    return sdf.style.apply(highlight_last_row, axis=1)
 
-    # Re-append the fixed footer
-    out_df = pd.concat([body, footer], ignore_index=True)
+                # Rebuild the full display (body rows + last footer row)
+                df_display = pd.concat([body_wo_footer, footer_row], ignore_index=False)
 
-    # Show
-    st.dataframe(out_df, use_container_width=True)
+                st.markdown(
+                    """
+                    <style>
+                      .note-muted { color:#6b7280; font-size: 0.85rem; }
+                    </style>
+                    """,
+                    unsafe_allow_html=True
+                )
+                st.markdown("<div class='note-muted'>Header = first row in A2:D13 • Footer (Team total) is fixed at the bottom.</div>", unsafe_allow_html=True)
 
-    # Download exactly what you see
-    st.download_button(
-        "Download CSV — Cash-in (A2:D13, header + fixed total row)",
-        data=out_df.to_csv(index=False).encode("utf-8"),
-        file_name="cashin_A2_D13_sorted.csv",
-        mime="text/csv",
-        key="cashin_dl_csv_fixed"
-    )
+                st.dataframe(_style_footer(df_display), use_container_width=True)
+
+                # Download exactly what’s shown (no extra rows) — still includes header & the Team total row
+                csv_buf = StringIO()
+                df_display.to_csv(csv_buf, index=False)
+                st.download_button(
+                    "Download CSV — Cash-in (A2:D13, header from first row, Team total at bottom)",
+                    data=csv_buf.getvalue().encode("utf-8"),
+                    file_name="cashin_a2_d13.csv",
+                    mime="text/csv",
+                    key="cashin_dl_csv"
+                )
+
+                # Optional: tiny bar indicator for the first numeric column (if present) excluding footer
+                with st.expander("Quick viz (optional)"):
+                    # Try to detect a numeric column to showcase (exclude non-numeric / footer)
+                    num_cols = []
+                    for c in df_display.columns:
+                        s = pd.to_numeric(df_display[c], errors="coerce")
+                        # numeric if at least half rows are numbers
+                        if s.notna().mean() >= 0.5:
+                            num_cols.append((c, s))
+                    if num_cols:
+                        col_name, s = num_cols[0]
+                        viz_df = body_wo_footer[[df_display.columns[0], col_name]].copy()
+                        viz_df.rename(columns={df_display.columns[0]: "Label", col_name: "Value"}, inplace=True)
+                        viz_df["Value"] = pd.to_numeric(viz_df["Value"], errors="coerce")
+                        viz_df = viz_df.dropna(subset=["Value"])
+                        ch = (
+                            alt.Chart(viz_df)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("Value:Q"),
+                                y=alt.Y("Label:N", sort="-x"),
+                                tooltip=["Label","Value"]
+                            )
+                            .properties(height=max(160, 22 * len(viz_df)))
+                        )
+                        st.altair_chart(ch, use_container_width=True)
+                    else:
+                        st.caption("No obvious numeric column found for a quick bar viz.")
+        except Exception as e:
+            st.error(f"Error parsing A2:D13: {e}")
