@@ -6063,9 +6063,23 @@ elif view == "Carry Forward":
 
         # ---------- Same-month vs carry-forward (lag buckets) ----------
         m_long = pivot.stack().rename(val_name).reset_index()
-        m_long["Lag"] = (pd.PeriodIndex(m_long["PayMonth"], freq="M") -
-                         pd.PeriodIndex(m_long["CreateMonth"], freq="M")).astype(int)
-        m_long.loc[m_long["Lag"] < 0, "Lag"] = np.nan  # ignore future-created in the matrix
+
+        # Robust month-index lag computation (handles missing safely)
+        def _ym_index(period_str_series: pd.Series) -> pd.Series:
+            """Convert 'YYYY-MM' (Period 'M') strings to monotonic month index (year*12+month)."""
+            # Coerce to Period; invalid -> NaT
+            p = pd.PeriodIndex(period_str_series.astype(str), freq="M")
+            # Build month index; will be Int64 with <NA> if any NaT
+            return (pd.Series(p.year, index=period_str_series.index).astype("Int64") * 12 +
+                    pd.Series(p.month, index=period_str_series.index).astype("Int64"))
+
+        pay_idx = _ym_index(m_long["PayMonth"])
+        cre_idx = _ym_index(m_long["CreateMonth"])
+        # Difference in months; keep as Int64 so <NA> is allowed
+        m_long["Lag"] = (pay_idx - cre_idx)
+
+        # Negative lags (future-created vs pay month) → set to NA
+        m_long.loc[m_long["Lag"].notna() & (m_long["Lag"] < 0), "Lag"] = pd.NA
 
         def lag_bucket(n):
             if pd.isna(n): return np.nan
