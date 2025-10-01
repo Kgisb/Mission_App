@@ -6230,7 +6230,7 @@ elif view == "Carry Forward":
     # run the tab
     _carry_forward_tab()
 # =========================
-# Buying Propensity Tab (with Sales Subscription fallback logic)
+# Buying Propensity Tab (Sales Subscription uses Installment Terms fallback = 1)
 # =========================
 elif view == "Buying Propensity":
     def _buying_propensity_tab():
@@ -6359,9 +6359,7 @@ elif view == "Buying Propensity":
         else:
             win_mask = filt_mask & mask_paid
 
-        # ---------- Window DF + Sales Subscription with fallback ----------
-        # Fallback rule: if Installment Terms is blank/NaN or 0, use Payment Term as the denominator.
-        # So inst_eff = INST_raw if > 0 else TERM; SS = TERM / inst_eff (only if both > 0)
+        # ---------- Window DF + Sales Subscription with fallback (=1 when blank/0) ----------
         df_win = pd.DataFrame({
             "_create": C, "_pay": P,
             "Payment Type": PT,
@@ -6369,14 +6367,14 @@ elif view == "Buying Propensity":
             "Installment Terms": INST_raw
         }).loc[win_mask].copy()
 
+        # If Installment Terms is NaN or <= 0, treat as 1
         inst_eff = np.where(
-            (df_win["Installment Terms"].notna()) & (df_win["Installment Terms"] > 0),
+            (~df_win["Installment Terms"].isna()) & (df_win["Installment Terms"] > 0),
             df_win["Installment Terms"],
-            df_win["Payment Term"]
+            1.0
         )
         df_win["Sales Subscription"] = np.where(
-            (df_win["Payment Term"].notna()) & (df_win["Payment Term"] > 0) &
-            (~pd.isna(inst_eff)) & (inst_eff > 0),
+            (df_win["Payment Term"].notna()) & (df_win["Payment Term"] > 0),
             df_win["Payment Term"] / inst_eff,
             np.nan
         )
@@ -6490,7 +6488,7 @@ elif view == "Buying Propensity":
                 else:
                     st.info("No Payment Term values in the current window to plot a distribution.")
 
-                # ===== Sales Subscription dynamics (MoM + histogram) with fallback =====
+                # ===== Sales Subscription dynamics (MoM + histogram) with fallback (=1) =====
                 st.markdown("#### Sales Subscription (Payment Term ÷ Installment Terms)")
                 has_inst_col = _inst and _inst in df_f.columns
                 if has_inst_col:
@@ -6501,9 +6499,9 @@ elif view == "Buying Propensity":
                         msk = month_mask(pm)
                         term_m = term_series_all[msk]
                         inst_m = inst_series_all[msk]
-                        # fallback: if inst <= 0 or NaN, use term
-                        inst_eff_m = np.where((~inst_m.isna()) & (inst_m > 0), inst_m, term_m)
-                        valid = (~term_m.isna()) & (term_m > 0) & (~pd.isna(inst_eff_m)) & (inst_eff_m > 0)
+                        # fallback: if inst is NaN or <= 0, use 1
+                        inst_eff_m = np.where((~inst_m.isna()) & (inst_m > 0), inst_m, 1.0)
+                        valid = (~term_m.isna()) & (term_m > 0)
                         ss = (term_m[valid] / inst_eff_m[valid]).mean() if valid.any() else np.nan
                         sales_rows.append({"Month": str(pm), "AvgSalesSubscription": float(ss) if not np.isnan(ss) else np.nan,
                                            "Count": int(valid.sum())})
@@ -6517,7 +6515,7 @@ elif view == "Buying Propensity":
                                 y=alt.Y("AvgSalesSubscription:Q", title="Avg Sales Subscription"),
                                 tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("AvgSalesSubscription:Q", format=".2f"), alt.Tooltip("Count:Q")]
                             )
-                            .properties(height=300, title="MoM — Average Sales Subscription (with fallback)")
+                            .properties(height=300, title="MoM — Average Sales Subscription (fallback: Installment Terms=1 if blank/0)")
                         )
                         st.altair_chart(ch_ss, use_container_width=True)
                     # Window histogram
@@ -6548,7 +6546,7 @@ elif view == "Buying Propensity":
                 if not dist.empty:
                     st.dataframe(dist.rename(columns={"Payment Term":"Payment Term (window)"}).head(1000), use_container_width=True)
 
-                # Sales Subscription table (MoM) with fallback
+                # Sales Subscription table (MoM) with fallback (=1)
                 has_inst_col = _inst and _inst in df_f.columns
                 if has_inst_col:
                     sales_rows = []
@@ -6558,8 +6556,8 @@ elif view == "Buying Propensity":
                         msk = month_mask(pm)
                         term_m = term_series_all[msk]
                         inst_m = inst_series_all[msk]
-                        inst_eff_m = np.where((~inst_m.isna()) & (inst_m > 0), inst_m, term_m)
-                        valid = (~term_m.isna()) & (term_m > 0) & (~pd.isna(inst_eff_m)) & (inst_eff_m > 0)
+                        inst_eff_m = np.where((~inst_m.isna()) & (inst_m > 0), inst_m, 1.0)
+                        valid = (~term_m.isna()) & (term_m > 0)
                         ss = (term_m[valid] / inst_eff_m[valid]).mean() if valid.any() else np.nan
                         sales_rows.append({"Month": str(pm), "AvgSalesSubscription": float(ss) if not np.isnan(ss) else np.nan,
                                            "ValidRows": int(valid.sum())})
@@ -6644,7 +6642,7 @@ elif view == "Buying Propensity":
                 "Metric",
                 ["Payment Term (mean ± std)", "Sales Subscription (mean ± std)"],
                 index=0, horizontal=True, key="bp_corr_metric",
-                help="Switch to ‘Sales Subscription’ (with fallback) to analyze Term ÷ Installment Terms by Payment Type."
+                help="Switch to ‘Sales Subscription’ (fallback: Installment Terms=1 if blank/0) to analyze Term ÷ Installment Terms by Payment Type."
             )
             corr_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_corr_view")
 
@@ -6717,4 +6715,3 @@ elif view == "Buying Propensity":
 
     # run the tab
     _buying_propensity_tab()
-
