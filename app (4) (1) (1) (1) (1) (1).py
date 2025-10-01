@@ -6715,3 +6715,106 @@ elif view == "Buying Propensity":
 
     # run the tab
     _buying_propensity_tab()
+# =========================
+# Cash-in Tab (live Google Sheet range A2:D13)
+# =========================
+elif view == "Cash-in":
+    import io
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime
+
+    st.subheader("Cash-in — Live Sheet Snapshot (A2:D13)")
+
+    # --- Config (from your link)
+    SHEET_ID = "1tw6gTaUEycAD5DJjw5ASSdF-WwYEt2TqcMb2lTKtKps"
+    GID = "0"
+    RANGE_A1 = "A2:D13"
+
+    # Optional: auto-refresh every N seconds
+    c1, c2 = st.columns([1.2, 1])
+    with c1:
+        auto = st.checkbox("Auto-refresh", value=False, help="When ON, the sheet data will refresh automatically.")
+    with c2:
+        interval_sec = st.number_input("Refresh interval (sec)", min_value=10, max_value=600, value=60, step=5, disabled=not auto)
+
+    if auto:
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=interval_sec * 1000, key="cashin_refresh")
+        except Exception:
+            st.caption("Tip: Install streamlit-autorefresh for auto-refresh, or click Rerun.")
+
+    @st.cache_data(ttl=60, show_spinner=True)
+    def _fetch_gsheet_csv(sheet_id: str, gid: str, a1: str) -> pd.DataFrame:
+        """Fetch via public CSV export (no auth)."""
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}&range={a1}"
+        df = pd.read_csv(url, header=None)
+        if df.columns.tolist() == list(range(df.shape[1])):
+            df.columns = [f"Col {i+1}" for i in range(df.shape[1])]
+        return df
+
+    @st.cache_data(ttl=60, show_spinner=True)
+    def _fetch_gsheet_service_account(sheet_id: str, gid: str, a1: str) -> pd.DataFrame:
+        """Fallback using a Google service account in st.secrets['gcp_service_account']."""
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
+        info = st.secrets.get("gcp_service_account", None)
+        if not info:
+            raise RuntimeError("No service account found in st.secrets['gcp_service_account'].")
+
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(sheet_id)
+        ws = sh.get_worksheet_by_id(int(gid))
+        values = ws.get(a1)  # list of lists
+
+        if not values:
+            return pd.DataFrame(columns=["Col 1", "Col 2", "Col 3", "Col 4"])
+
+        width = max(len(r) for r in values)
+        padded = [r + [""] * (width - len(r)) for r in values]
+        df = pd.DataFrame(padded, columns=[f"Col {i+1}" for i in range(width)])
+        return df
+
+    def fetch_live_df() -> pd.DataFrame:
+        """Try CSV export; on failure, fall back to service account if available."""
+        try:
+            df = _fetch_gsheet_csv(SHEET_ID, GID, RANGE_A1)
+            method = "CSV export"
+        except Exception as e_csv:
+            try:
+                df = _fetch_gsheet_service_account(SHEET_ID, GID, RANGE_A1)
+                method = "Service account"
+            except Exception as e_sa:
+                st.error(
+                    "Unable to load Google Sheet.\n\n"
+                    "• Ensure the sheet is shared publicly (Viewer) **or**\n"
+                    "• Add a Google service account JSON to `st.secrets['gcp_service_account']` with read access.\n\n"
+                    f"CSV error: {e_csv}\nService Account error: {e_sa}"
+                )
+                return pd.DataFrame()
+        st.caption(f"Fetched via **{method}** at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        return df
+
+    df_cashin = fetch_live_df()
+
+    if df_cashin.empty:
+        st.info("No data returned from the sheet range (A2:D13).")
+    else:
+        st.dataframe(df_cashin, use_container_width=True)
+
+        # Download as CSV
+        csv_bytes = df_cashin.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download CSV — Cash-in (A2:D13)",
+            data=csv_bytes,
+            file_name="cashin_A2_D13.csv",
+            mime="text/csv",
+            key="cashin_dl_csv"
+        )
