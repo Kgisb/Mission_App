@@ -6716,7 +6716,7 @@ elif view == "Buying Propensity":
     # run the tab
     _buying_propensity_tab()
 # =========================
-# Cash-in Tab (live Google Sheet range A2:D13)
+# Cash-in Tab (live Google Sheet range A2:D13, fixed header & footer)
 # =========================
 elif view == "Cash-in":
     import io
@@ -6729,7 +6729,7 @@ elif view == "Cash-in":
     # --- Config (from your link)
     SHEET_ID = "1tw6gTaUEycAD5DJjw5ASSdF-WwYEt2TqcMb2lTKtKps"
     GID = "0"
-    RANGE_A1 = "A2:D13"
+    RANGE_A1 = "A2:D13"  # includes header row (first) + data + final total (last)
 
     # Optional: auto-refresh every N seconds
     c1, c2 = st.columns([1.2, 1])
@@ -6749,9 +6749,7 @@ elif view == "Cash-in":
     def _fetch_gsheet_csv(sheet_id: str, gid: str, a1: str) -> pd.DataFrame:
         """Fetch via public CSV export (no auth)."""
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}&range={a1}"
-        df = pd.read_csv(url, header=None)
-        if df.columns.tolist() == list(range(df.shape[1])):
-            df.columns = [f"Col {i+1}" for i in range(df.shape[1])]
+        df = pd.read_csv(url, header=None, dtype=str)  # keep raw strings; we’ll coerce later
         return df
 
     @st.cache_data(ttl=60, show_spinner=True)
@@ -6774,15 +6772,15 @@ elif view == "Cash-in":
         ws = sh.get_worksheet_by_id(int(gid))
         values = ws.get(a1)  # list of lists
 
+        # convert to dataframe (strings), no header yet
         if not values:
-            return pd.DataFrame(columns=["Col 1", "Col 2", "Col 3", "Col 4"])
-
+            return pd.DataFrame()
         width = max(len(r) for r in values)
         padded = [r + [""] * (width - len(r)) for r in values]
-        df = pd.DataFrame(padded, columns=[f"Col {i+1}" for i in range(width)])
+        df = pd.DataFrame(padded, dtype=str)
         return df
 
-    def fetch_live_df() -> pd.DataFrame:
+    def fetch_live_raw() -> pd.DataFrame:
         """Try CSV export; on failure, fall back to service account if available."""
         try:
             df = _fetch_gsheet_csv(SHEET_ID, GID, RANGE_A1)
@@ -6802,19 +6800,82 @@ elif view == "Cash-in":
         st.caption(f"Fetched via **{method}** at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return df
 
-    df_cashin = fetch_live_df()
+    def prepare_df(df_in: pd.DataFrame) -> pd.DataFrame:
+        """
+        Interpret first row as header, last row as fixed footer.
+        Return a dataframe with the same rows as the sheet subset but with proper headers.
+        """
+        if df_in.empty:
+            return df_in
 
-    if df_cashin.empty:
+        # First row -> header
+        header = df_in.iloc[0].tolist()
+        data = df_in.iloc[1:].copy()
+
+        # Apply headers; pad or truncate to match width
+        ncols = data.shape[1]
+        if len(header) < ncols:
+            header = header + [f"Col {i}" for i in range(len(header)+1, ncols+1)]
+        elif len(header) > ncols:
+            header = header[:ncols]
+        data.columns = header
+
+        return data.reset_index(drop=True)
+
+    # Fetch & prepare
+    df_raw = fetch_live_raw()
+    if df_raw.empty:
         st.info("No data returned from the sheet range (A2:D13).")
-    else:
-        st.dataframe(df_cashin, use_container_width=True)
+        st.stop()
 
-        # Download as CSV
-        csv_bytes = df_cashin.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV — Cash-in (A2:D13)",
-            data=csv_bytes,
-            file_name="cashin_A2_D13.csv",
-            mime="text/csv",
-            key="cashin_dl_csv"
-        )
+    df = prepare_df(df_raw)
+    if df.empty:
+        st.info("The selected range has no rows beyond the header.")
+        st.stop()
+
+    # Split into: middle body (sortable) + fixed last row (footer)
+    if len(df) >= 2:
+        body = df.iloc[:-1].copy()
+        footer = df.iloc[-1:].copy()
+    else:
+        body = df.copy()
+        footer = df.iloc[0:0].copy()
+
+    # Sorting UI (applies to body only; header & footer remain fixed)
+    sort_cols = list(body.columns)
+    col_sort, col_dir = st.columns([1.4, 1])
+    with col_sort:
+        sort_by = st.selectbox("Sort by (body only)", options=sort_cols, index=0, key="cashin_sort_col")
+    with col_dir:
+        descending = st.toggle("Descending", value=False, key="cashin_sort_desc")
+
+    # Try numeric sort when possible (but leave original strings if not numeric)
+    def _coerce_series(s: pd.Series):
+        s_num = pd.to_numeric(s.str.replace(",", "", regex=False), errors="coerce")
+        if s_num.notna().any():
+            # If at least some numeric, sort by numeric; but keep display as original
+            return s_num, True
+        return s, False
+
+    if sort_by in body.columns:
+        sort_key, is_numeric = _coerce_series(body[sort_by].astype(str))
+        body = body.assign(__sortkey=sort_key.values).sort_values(
+            "__sortkey" if is_numeric else sort_by,
+            ascending=not descending,
+            kind="mergesort"  # stable sort
+        ).drop(columns="__sortkey", errors="ignore")
+
+    # Re-append the fixed footer
+    out_df = pd.concat([body, footer], ignore_index=True)
+
+    # Show
+    st.dataframe(out_df, use_container_width=True)
+
+    # Download exactly what you see
+    st.download_button(
+        "Download CSV — Cash-in (A2:D13, header + fixed total row)",
+        data=out_df.to_csv(index=False).encode("utf-8"),
+        file_name="cashin_A2_D13_sorted.csv",
+        mime="text/csv",
+        key="cashin_dl_csv_fixed"
+    )
