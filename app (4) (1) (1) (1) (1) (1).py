@@ -167,7 +167,7 @@ with st.sidebar:
     st.header("JetLearn • Navigation")
     view = st.radio(
         "Go to",
-        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Velocity", "Carry Forward", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
+        ["Dashboard", "MIS", "Predictibility", "Referrals", "Sales Tracker", "AC Wise Detail", "Trend & Analysis", "80-20", "Stuck deals", "Deal Velocity", "Buying Propensity", "Carry Forward", "Lead Movement", "Deal Decay", "Bubble Explorer", "Heatmap"],  # ← add this
         index=0
     )
     track = st.radio("Track", ["Both", "AI Coding", "Math"], index=0)
@@ -6229,3 +6229,386 @@ elif view == "Carry Forward":
 
     # run the tab
     _carry_forward_tab()
+# =========================
+# Buying Propensity Tab
+# =========================
+elif view == "Buying Propensity":
+    def _buying_propensity_tab():
+        st.subheader("Buying Propensity — Payment Term & Payment Type")
+
+        # ---------- Resolve columns (defensive) ----------
+        _create = create_col if (create_col in df_f.columns) else find_col(df_f, ["Create Date","Created Date","Deal Create Date","CreateDate"])
+        _pay    = pay_col    if (pay_col    in df_f.columns) else find_col(df_f, ["Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"])
+
+        # Core variables for this tab
+        _term = find_col(df_f, ["Payment Term","PaymentTerm","Term","Installments","Tenure"])
+        _ptype = find_col(df_f, ["Payment Type","PaymentType","Payment Mode","PaymentMode","Mode of Payment","Mode"])
+
+        # Optional filters
+        _cty = country_col     if (country_col     in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
+        _src = source_col      if (source_col      in df_f.columns) else find_col(df_f, ["JetLearn Deal Source","Deal Source","Source"])
+        _cns = counsellor_col  if (counsellor_col  in df_f.columns) else find_col(df_f, ["Academic Counsellor","Counsellor","Advisor"])
+
+        if not _create or not _pay or _create not in df_f.columns or _pay not in df_f.columns:
+            st.warning("Create/Payment columns are required for Buying Propensity. Please map them in the sidebar.", icon="⚠️")
+            st.stop()
+
+        if not _term or _term not in df_f.columns:
+            st.warning("‘Payment Term’ column not found. Please ensure a column like ‘Payment Term’/‘PaymentTerm’ exists.", icon="⚠️")
+            st.stop()
+        if not _ptype or _ptype not in df_f.columns:
+            st.warning("‘Payment Type’ column not found. Please ensure a column like ‘Payment Type’/‘Payment Mode’ exists.", icon="⚠️")
+            st.stop()
+
+        # ---------- Controls ----------
+        col_top1, col_top2, col_top3 = st.columns([1.0, 1.2, 1.2])
+        with col_top1:
+            mode = st.radio(
+                "Mode",
+                ["MTD", "Cohort"],
+                index=1,
+                horizontal=True,
+                key="bp_mode",
+                help=("MTD: enrolments/events counted only if the deal was also created in the same window/month. "
+                      "Cohort: enrolments/events counted by payment date regardless of create month.")
+            )
+        with col_top2:
+            scope = st.radio("Date scope (window KPIs)", ["This month", "Last month", "Custom"], index=0, horizontal=True, key="bp_dscope")
+        with col_top3:
+            # MoM horizon for trends
+            mom_trailing = st.selectbox("MoM trailing (months)", [3, 6, 9, 12, 18, 24], index=3, key="bp_momh")
+
+        today_d = date.today()
+        if scope == "This month":
+            range_start, range_end = month_bounds(today_d)
+        elif scope == "Last month":
+            range_start, range_end = last_month_bounds(today_d)
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                range_start = st.date_input("Start date", value=today_d.replace(day=1), key="bp_start")
+            with c2:
+                range_end   = st.date_input("End date", value=month_bounds(today_d)[1], key="bp_end")
+            if range_end < range_start:
+                st.error("End date cannot be before start date.")
+                st.stop()
+        st.caption(f"Scope: **{scope}** ({range_start} → {range_end}) • Mode: **{mode}**")
+
+        # MoM anchor month (controls trend charts)
+        end_m_default = today_d.replace(day=1)
+        end_month = st.date_input("Trend anchor month (use 1st of month for MoM)", value=end_m_default, key="bp_end_month")
+        if isinstance(end_month, tuple):
+            end_month = end_month[0]
+        end_period = pd.Period(end_month.replace(day=1), freq="M")
+        months = pd.period_range(end=end_period, periods=int(mom_trailing), freq="M")
+        months_list = months.astype(str).tolist()
+
+        # ---------- Filters (with “All” default for JLS/Counsellor) ----------
+        def norm_cat(s):
+            return s.fillna("Unknown").astype(str).str.strip()
+
+        f1, f2, f3 = st.columns([1.2, 1.2, 1.2])
+        if _cty:
+            all_cty = sorted(norm_cat(df_f[_cty]).unique().tolist())
+            opt_cty = ["All"] + all_cty
+            sel_cty = f1.multiselect("Filter Country", options=opt_cty, default=["All"], key="bp_cty")
+        else:
+            all_cty, sel_cty = [], ["All"]
+
+        if _src:
+            all_src = sorted(norm_cat(df_f[_src]).unique().tolist())
+            opt_src = ["All"] + all_src
+            sel_src = f2.multiselect("Filter JetLearn Deal Source", options=opt_src, default=["All"], key="bp_src")
+        else:
+            all_src, sel_src = [], ["All"]
+
+        if _cns:
+            all_cns = sorted(norm_cat(df_f[_cns]).unique().tolist())
+            opt_cns = ["All"] + all_cns
+            sel_cns = f3.multiselect("Filter Academic Counsellor", options=opt_cns, default=["All"], key="bp_cns")
+        else:
+            all_cns, sel_cns = [], ["All"]
+
+        def _apply_multi_all(series, selected):
+            if series is None or "All" in selected:
+                return pd.Series(True, index=df_f.index)
+            return norm_cat(series).isin(selected)
+
+        mask_cty = _apply_multi_all(df_f[_cty] if _cty else None, sel_cty)
+        mask_src = _apply_multi_all(df_f[_src] if _src else None, sel_src)
+        mask_cns = _apply_multi_all(df_f[_cns] if _cns else None, sel_cns)
+        filt_mask = mask_cty & mask_src & mask_cns
+
+        # ---------- Normalize base series ----------
+        C = coerce_datetime(df_f[_create]).dt.date
+        P = coerce_datetime(df_f[_pay]).dt.date
+        PT = norm_cat(df_f[_ptype])
+        TERM = pd.to_numeric(df_f[_term], errors="coerce")  # numeric, NaN if not parseable
+
+        def between_date(s, a, b):
+            return s.notna() & (s >= a) & (s <= b)
+
+        mask_created = between_date(C, range_start, range_end)
+        mask_paid    = between_date(P, range_start, range_end)
+
+        # Mode-aware inclusion mask for the window
+        if mode == "MTD":
+            win_mask = filt_mask & mask_created & mask_paid
+        else:
+            win_mask = filt_mask & mask_paid
+
+        df_win = pd.DataFrame({
+            "_create": C, "_pay": P,
+            "Payment Type": PT, "Payment Term": TERM
+        }).loc[win_mask].copy()
+
+        # ---------- KPI strip for window ----------
+        avg_term = float(df_win["Payment Term"].mean()) if df_win["Payment Term"].notna().any() else np.nan
+        med_term = float(df_win["Payment Term"].median()) if df_win["Payment Term"].notna().any() else np.nan
+        n_payments = int(len(df_win))
+        top_type = (df_win["Payment Type"].value_counts().idxmax()
+                    if not df_win.empty and df_win["Payment Type"].notna().any() else "—")
+
+        st.markdown(
+            """
+            <style>
+              .kpi-card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #ffffff; }
+              .kpi-title { font-size: 0.9rem; color: #6b7280; margin-bottom: 6px; }
+              .kpi-value { font-size: 1.4rem; font-weight: 700; }
+              .kpi-sub { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            a_txt = "–" if np.isnan(avg_term) else f"{avg_term:.2f}"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Avg Payment Term</div>"
+                f"<div class='kpi-value'>{a_txt}</div>"
+                f"<div class='kpi-sub'>{range_start} → {range_end}</div></div>", unsafe_allow_html=True)
+        with c2:
+            m_txt = "–" if np.isnan(med_term) else f"{med_term:.1f}"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Median Payment Term</div>"
+                f"<div class='kpi-value'>{m_txt}</div>"
+                f"<div class='kpi-sub'>Window (Mode: {mode})</div></div>", unsafe_allow_html=True)
+        with c3:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Payments in Window</div>"
+                f"<div class='kpi-value'>{n_payments:,}</div>"
+                f"<div class='kpi-sub'>Mode: {mode}</div></div>", unsafe_allow_html=True)
+        with c4:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Top Payment Type</div>"
+                f"<div class='kpi-value'>{top_type}</div>"
+                f"<div class='kpi-sub'>By count in window</div></div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ---------- MoM Helpers ----------
+        C_m = coerce_datetime(df_f[_create]).dt.to_period("M")
+        P_m = coerce_datetime(df_f[_pay]).dt.to_period("M")
+
+        # For each month in the trailing window, build a mask honoring MTD/Cohort
+        def month_mask(period_m):
+            if period_m is pd.NaT:
+                return pd.Series(False, index=df_f.index)
+            if mode == "MTD":
+                return (P_m == period_m) & (C_m == period_m) & filt_mask
+            else:
+                return (P_m == period_m) & filt_mask
+
+        # =============================
+        # Tabs: Term Dynamics / Type Dynamics / Correlation
+        # =============================
+        tabs = st.tabs(["Payment Term Dynamics", "Payment Type Dynamics", "Term × Type (Correlation)"])
+
+        # ---- 1) Payment Term Dynamics ----
+        with tabs[0]:
+            sub_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_term_view")
+
+            # MoM Mean Term
+            rows = []
+            for pm in months:
+                msk = month_mask(pm)
+                term_mean = pd.to_numeric(df_f.loc[msk, _term], errors="coerce").mean()
+                rows.append({"Month": str(pm), "AvgTerm": float(term_mean) if not np.isnan(term_mean) else np.nan,
+                             "Count": int(msk.sum())})
+            term_mom = pd.DataFrame(rows)
+
+            # In-range distribution (window)
+            dist = df_win[["Payment Term"]].copy()
+            dist = dist[dist["Payment Term"].notna()]
+
+            if sub_view == "Graph":
+                if not term_mom.empty:
+                    ch_line = (
+                        alt.Chart(term_mom)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("Month:N", sort=months_list, title="Month"),
+                            y=alt.Y("AvgTerm:Q", title="Avg Payment Term"),
+                            tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("AvgTerm:Q", format=".2f"), alt.Tooltip("Count:Q")]
+                        )
+                        .properties(height=300, title="MoM — Average Payment Term")
+                    )
+                    st.altair_chart(ch_line, use_container_width=True)
+                else:
+                    st.info("No data for MoM Average Payment Term in the selected horizon.")
+
+                # Histogram for window
+                if not dist.empty:
+                    ch_hist = (
+                        alt.Chart(dist)
+                        .mark_bar(opacity=0.9)
+                        .encode(
+                            x=alt.X("Payment Term:Q", bin=alt.Bin(maxbins=30), title="Payment Term"),
+                            y=alt.Y("count():Q", title="Count"),
+                            tooltip=[alt.Tooltip("count():Q", title="Count")]
+                        )
+                        .properties(height=280, title="Window Distribution — Payment Term")
+                    )
+                    st.altair_chart(ch_hist, use_container_width=True)
+                else:
+                    st.info("No Payment Term values in the current window to plot a distribution.")
+            else:
+                st.dataframe(term_mom, use_container_width=True)
+                st.download_button(
+                    "Download CSV — MoM Average Payment Term",
+                    term_mom.to_csv(index=False).encode("utf-8"),
+                    "buying_propensity_term_mom.csv", "text/csv",
+                    key="bp_dl_term_mom"
+                )
+                if not dist.empty:
+                    st.dataframe(dist.rename(columns={"Payment Term":"Payment Term (window)"}).head(1000), use_container_width=True)
+
+        # ---- 2) Payment Type Dynamics ----
+        with tabs[1]:
+            type_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_type_view")
+            pct_mode  = st.checkbox("Show % share per month", value=False, key="bp_type_pct")
+
+            # MoM counts by type
+            type_rows = []
+            for pm in months:
+                msk = month_mask(pm)
+                if msk.any():
+                    tmp = norm_cat(df_f.loc[msk, _ptype]).value_counts(dropna=False).rename_axis("Payment Type").rename("Count").reset_index()
+                    tmp["Month"] = str(pm)
+                    type_rows.append(tmp)
+            if type_rows:
+                type_mom = pd.concat(type_rows, ignore_index=True)
+            else:
+                type_mom = pd.DataFrame(columns=["Payment Type","Count","Month"])
+
+            if type_view == "Graph":
+                if type_mom.empty:
+                    st.info("No data for Payment Type MoM dynamics.")
+                else:
+                    if pct_mode:
+                        pct_df = type_mom.copy()
+                        month_tot = pct_df.groupby("Month")["Count"].transform("sum")
+                        pct_df["Pct"] = np.where(month_tot > 0, pct_df["Count"] / month_tot * 100.0, 0.0)
+                        ch_type = (
+                            alt.Chart(pct_df)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("Month:N", sort=months_list),
+                                y=alt.Y("Pct:Q", title="% of month", scale=alt.Scale(domain=[0,100])),
+                                color=alt.Color("Payment Type:N", legend=alt.Legend(orient="bottom")),
+                                tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Payment Type:N"), alt.Tooltip("Pct:Q", format=".1f")]
+                            )
+                            .properties(height=340, title="MoM — Payment Type % Share")
+                        )
+                    else:
+                        ch_type = (
+                            alt.Chart(type_mom)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("Month:N", sort=months_list),
+                                y=alt.Y("Count:Q", title="Count"),
+                                color=alt.Color("Payment Type:N", legend=alt.Legend(orient="bottom")),
+                                tooltip=[alt.Tooltip("Month:N"), alt.Tooltip("Payment Type:N"), alt.Tooltip("Count:Q")]
+                            )
+                            .properties(height=340, title="MoM — Payment Type Counts")
+                        )
+                    st.altair_chart(ch_type, use_container_width=True)
+            else:
+                if type_mom.empty:
+                    st.info("No data for Payment Type MoM dynamics.")
+                else:
+                    wide = (type_mom
+                            .pivot(index="Month", columns="Payment Type", values="Count")
+                            .reindex(index=months_list)
+                            .fillna(0.0)
+                            .reset_index())
+                    st.dataframe(wide, use_container_width=True)
+                    st.download_button(
+                        "Download CSV — MoM Payment Type",
+                        wide.to_csv(index=False).encode("utf-8"),
+                        "buying_propensity_type_mom.csv", "text/csv",
+                        key="bp_dl_type_mom"
+                    )
+
+        # ---- 3) Term × Type (Correlation-ish view) ----
+        with tabs[2]:
+            corr_view = st.radio("View as", ["Graph", "Table"], horizontal=True, key="bp_corr_view",
+                                 help="Shows how Payment Term varies by Payment Type for the selected window.")
+            corr_df = df_win[["Payment Type","Payment Term"]].dropna()
+            if corr_df.empty:
+                st.info("No rows in the current window with both Payment Term and Payment Type.")
+            else:
+                # Summary by type
+                summary = (
+                    corr_df.groupby("Payment Type", as_index=False)
+                           .agg(Count=("Payment Term","size"),
+                                MeanTerm=("Payment Term","mean"),
+                                MedianTerm=("Payment Term","median"),
+                                StdTerm=("Payment Term","std"))
+                )
+                summary["MeanTerm"]   = summary["MeanTerm"].round(2)
+                summary["MedianTerm"] = summary["MedianTerm"].round(2)
+                summary["StdTerm"]    = summary["StdTerm"].fillna(0.0).round(2)
+
+                if corr_view == "Graph":
+                    # Boxplot-like (using rule and ticks) for Payment Term by Payment Type
+                    # Simpler: bar of mean + error band = std (robust across Altair versions)
+                    mean_err = summary.copy()
+                    mean_err["Low"]  = (mean_err["MeanTerm"] - mean_err["StdTerm"]).clip(lower=0)
+                    mean_err["High"] = mean_err["MeanTerm"] + mean_err["StdTerm"]
+
+                    base = alt.Chart(mean_err).encode(x=alt.X("Payment Type:N", sort=summary.sort_values("MeanTerm")["Payment Type"].tolist()))
+                    error = base.mark_errorbar().encode(y=alt.Y("Low:Q", title="Payment Term"), y2="High:Q")
+                    bars  = base.mark_bar().encode(y="MeanTerm:Q", tooltip=[
+                        alt.Tooltip("Payment Type:N"), alt.Tooltip("Count:Q"),
+                        alt.Tooltip("MeanTerm:Q", format=".2f"), alt.Tooltip("MedianTerm:Q", format=".2f"),
+                        alt.Tooltip("StdTerm:Q", format=".2f")
+                    ]).properties(height=360, title="Window — Payment Term by Payment Type (mean ± std)")
+                    st.altair_chart(error + bars, use_container_width=True)
+
+                    # Scatter (each row) optionally
+                    show_scatter = st.checkbox("Show raw points (jitter)", value=False, key="bp_corr_scatter")
+                    if show_scatter:
+                        # simple jitter via xOffset-like effect: use column as x and random y? Better: add jitter to x using transform_calculate isn't supported easily; plot strip by overlaying points
+                        pts = (
+                            alt.Chart(corr_df)
+                            .mark_circle(opacity=0.35, size=40)
+                            .encode(
+                                x=alt.X("Payment Type:N"),
+                                y=alt.Y("Payment Term:Q"),
+                                tooltip=[alt.Tooltip("Payment Type:N"), alt.Tooltip("Payment Term:Q")]
+                            )
+                            .properties(height=320, title="Points — Payment Term by Payment Type")
+                        )
+                        st.altair_chart(pts, use_container_width=True)
+                else:
+                    st.dataframe(summary.sort_values(["MeanTerm","Count"], ascending=[False, False]), use_container_width=True)
+                    st.download_button(
+                        "Download CSV — Term × Type Summary",
+                        summary.to_csv(index=False).encode("utf-8"),
+                        "buying_propensity_term_by_type.csv", "text/csv",
+                        key="bp_dl_corr_summary"
+                    )
+
+    # run the tab
+    _buying_propensity_tab()
