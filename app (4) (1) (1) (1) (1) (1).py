@@ -5954,11 +5954,11 @@ elif view == "Deal Velocity":
     # run tab
     _deal_velocity_tab()
 # =========================
-# Carry Forward Tab (Cohort Contributions)
+# Carry Forward Tab (Cohort Contributions) — Enrolments only
 # =========================
 elif view == "Carry Forward":
     def _carry_forward_tab():
-        st.subheader("Carry Forward — Cohort Contribution of Created → Enrolment/Revenue")
+        st.subheader("Carry Forward — Cohort Contribution of Created → Enrolments")
 
         # ---------- Resolve core columns ----------
         _create = create_col if (create_col in df_f.columns) else find_col(df_f, [
@@ -5967,8 +5967,6 @@ elif view == "Carry Forward":
         _pay    = pay_col if (pay_col in df_f.columns) else find_col(df_f, [
             "Payment Received Date","Payment Date","Enrolment Date","PaymentReceivedDate"
         ])
-        # Try to find revenue/amount; if missing, we’ll fall back to counts
-        _amt    = find_col(df_f, ["Revenue","Amount","Payment Amount","Paid Amount","Fee","Net Amount"])
 
         # Optional filters
         _cty = country_col if (country_col in df_f.columns) else find_col(df_f, ["Country","Student Country","Deal Country"])
@@ -5980,20 +5978,10 @@ elif view == "Carry Forward":
             st.stop()
 
         # ---------- Controls ----------
-        col_top1, col_top2, col_top3 = st.columns([1.2, 1.2, 1.2])
+        col_top1, col_top2 = st.columns([1.2, 1.2])
         with col_top1:
-            metric_mode = st.radio(
-                "Metric",
-                ["Enrolments", "Revenue"],
-                index=0 if _amt is None or _amt not in df_f.columns else 1,
-                horizontal=True,
-                key="cf_metric",
-                help="If 'Revenue' selected but no amount column is detected, counts will be used."
-            )
-        with col_top2:
-            # Cohort analysis is inherently by payment month (when conversion/revenue is realized)
             trailing = st.selectbox("Payment MoM horizon", [3, 6, 9, 12, 18, 24], index=2, key="cf_trailing")
-        with col_top3:
+        with col_top2:
             show_mode = st.radio("View", ["Graph", "Table"], index=0, horizontal=True, key="cf_view")
 
         # Date scope (payment-month range end)
@@ -6050,14 +6038,9 @@ elif view == "Carry Forward":
         in_pay_window = P.isin(months)
         base_mask = in_pay_window & filt_mask
 
-        if metric_mode == "Revenue" and _amt and _amt in df_f.columns:
-            metric_series = pd.to_numeric(df_f[_amt], errors="coerce").fillna(0.0)
-            agg_func = "sum"
-            val_name = "Revenue"
-        else:
-            metric_series = pd.Series(1, index=df_f.index, dtype=float)
-            agg_func = "sum"
-            val_name = "Enrolments"
+        # Enrolments metric (counts)
+        val_name = "Enrolments"
+        metric_series = pd.Series(1, index=df_f.index, dtype=float)
 
         # Cohort matrix: Payment Month × Create Month
         cohort_df = pd.DataFrame({
@@ -6070,7 +6053,7 @@ elif view == "Carry Forward":
             st.info("No rows in selected horizon/filters.")
             st.stop()
 
-        # Pivot: matrix with rows=PayMonth, cols=CreateMonth
+        # Pivot: rows=PayMonth, cols=CreateMonth
         matrix = (cohort_df
                   .groupby(["PayMonth","CreateMonth"], as_index=False)[val_name]
                   .sum())
@@ -6079,13 +6062,11 @@ elif view == "Carry Forward":
                         .fillna(0.0))
 
         # ---------- Same-month vs carry-forward (lag buckets) ----------
-        # lag = months between PayMonth and CreateMonth (>=0 only; if negative treat as 0 contribution here)
         m_long = pivot.stack().rename(val_name).reset_index()
         m_long["Lag"] = (pd.PeriodIndex(m_long["PayMonth"], freq="M") -
                          pd.PeriodIndex(m_long["CreateMonth"], freq="M")).astype(int)
         m_long.loc[m_long["Lag"] < 0, "Lag"] = np.nan  # ignore future-created in the matrix
 
-        # Build lag buckets: 0 (same), 1, 2, 3, 4, 5, 6+
         def lag_bucket(n):
             if pd.isna(n): return np.nan
             n = int(n)
@@ -6102,16 +6083,14 @@ elif view == "Carry Forward":
         lag_tbl = (m_long.dropna(subset=["LagBucket"])
                           .groupby(["PayMonth","LagBucket"], as_index=False)[val_name]
                           .sum())
-        # Ensure all months exist
         lag_tbl = lag_tbl[lag_tbl["PayMonth"].isin(months_list)]
-        # Reorder buckets
         bucket_order = ["Lag 0 (Same Month)","Lag 1","Lag 2","Lag 3","Lag 4","Lag 5","Lag 6+"]
         lag_tbl["LagBucket"] = pd.Categorical(lag_tbl["LagBucket"], categories=bucket_order, ordered=True)
 
-        # Totals & same-month contribution KPI (latest month)
+        # KPIs for latest month
         latest = months_list[-1]
-        latest_tot = lag_tbl.loc[lag_tbl["PayMonth"] == latest, val_name].sum()
-        latest_same = lag_tbl.loc[(lag_tbl["PayMonth"] == latest) & (lag_tbl["LagBucket"]=="Lag 0 (Same Month)") , val_name].sum()
+        latest_tot = int(lag_tbl.loc[lag_tbl["PayMonth"] == latest, val_name].sum())
+        latest_same = int(lag_tbl.loc[(lag_tbl["PayMonth"] == latest) & (lag_tbl["LagBucket"]=="Lag 0 (Same Month)") , val_name].sum())
         latest_pct_same = (latest_same / latest_tot * 100.0) if latest_tot > 0 else np.nan
 
         st.markdown(
@@ -6129,12 +6108,12 @@ elif view == "Carry Forward":
         with k1:
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>Latest Month Total ({val_name})</div>"
-                f"<div class='kpi-value'>{(latest_tot if val_name=='Revenue' else int(latest_tot)):,}</div>"
+                f"<div class='kpi-value'>{latest_tot:,}</div>"
                 f"<div class='kpi-sub'>{latest}</div></div>", unsafe_allow_html=True)
         with k2:
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>Same-Month ({val_name})</div>"
-                f"<div class='kpi-value'>{(latest_same if val_name=='Revenue' else int(latest_same)):,}</div>"
+                f"<div class='kpi-value'>{latest_same:,}</div>"
                 f"<div class='kpi-sub'>{latest}</div></div>", unsafe_allow_html=True)
         with k3:
             pct_txt = "–" if np.isnan(latest_pct_same) else f"{latest_pct_same:.1f}%"
@@ -6150,7 +6129,6 @@ elif view == "Carry Forward":
         with tabs[0]:
             view_heat = st.radio("View as", ["Graph", "Table"], index=0, horizontal=True, key="cf_heat_view")
             if view_heat == "Graph":
-                # Heatmap of payment month × create month
                 heat_df = matrix.copy()
                 heat_df["PayMonthCat"] = pd.Categorical(heat_df["PayMonth"], categories=months_list, ordered=True)
                 ch = (
@@ -6163,7 +6141,7 @@ elif view == "Carry Forward":
                         tooltip=[
                             alt.Tooltip("PayMonth:N", title="Payment Month"),
                             alt.Tooltip("CreateMonth:N", title="Create Month"),
-                            alt.Tooltip(f"{val_name}:Q", title=val_name, format=".2f" if val_name=="Revenue" else "d"),
+                            alt.Tooltip(f"{val_name}:Q", title=val_name, format="d"),
                         ],
                     )
                     .properties(height=420, title=f"Cohort Heatmap — {val_name}")
@@ -6175,7 +6153,6 @@ elif view == "Carry Forward":
         with tabs[1]:
             view_lag = st.radio("Lag view as", ["Graph", "Table"], index=0, horizontal=True, key="cf_lag_view")
             if view_lag == "Graph":
-                # Stacked bar by lag buckets per pay month
                 ch2 = (
                     alt.Chart(lag_tbl)
                     .mark_bar()
@@ -6185,13 +6162,12 @@ elif view == "Carry Forward":
                         color=alt.Color("LagBucket:N", legend=alt.Legend(orient="bottom")),
                         tooltip=[alt.Tooltip("PayMonth:N"),
                                  alt.Tooltip("LagBucket:N"),
-                                 alt.Tooltip(f"{val_name}:Q", format=".2f" if val_name=="Revenue" else "d")]
+                                 alt.Tooltip(f"{val_name}:Q", format="d")]
                     )
                     .properties(height=360, title=f"Lag Breakdown — {val_name}")
                 )
                 st.altair_chart(ch2, use_container_width=True)
 
-                # Optional percentage stack
                 pct_toggle = st.checkbox("Show % share per month", value=False, key="cf_pct_stack")
                 if pct_toggle:
                     pct_tbl = lag_tbl.copy()
@@ -6212,7 +6188,6 @@ elif view == "Carry Forward":
                     )
                     st.altair_chart(ch3, use_container_width=True)
             else:
-                # Wide table: one row per PayMonth, columns = lag buckets
                 wide = (lag_tbl
                         .pivot(index="PayMonth", columns="LagBucket", values=val_name)
                         .reindex(index=months_list, columns=bucket_order)
